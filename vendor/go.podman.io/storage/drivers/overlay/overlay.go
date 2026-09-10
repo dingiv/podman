@@ -3,11 +3,12 @@
 package overlay
 
 import (
+	"io"
+
 	"bytes"
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -2447,7 +2448,19 @@ func (d *Driver) DiffSize(id string, idMappings *idtools.IDMappings, parent stri
 // Diff produces an archive of the changes between the specified
 // layer and its parent layer which may be "".
 func (d *Driver) Diff(id string, idMappings *idtools.IDMappings, parent string, parentMappings *idtools.IDMappings, mountLabel string) (io.ReadCloser, error) {
-	if d.useNaiveDiff() || !d.isParent(id, parent) {
+	// easytidy (easytidy/engine): with a mount program (fuse-overlayfs) the
+	// upperdir uses the same layout/whiteout convention as the native path, so
+	// tarring the diff directory directly is correct and O(diff).  The naive
+	// path is unusable here for two reasons: ChangesDirs compares the
+	// keep-id-mapped container view against an unmapped parent view (every
+	// file looks changed), and with parent=="" NaiveDiffDriver.Diff tars the
+	// ENTIRE merged rootfs, which the destination then re-applies with a
+	// per-file chown (storage-untar).
+	useNaive := d.useNaiveDiff()
+	if d.options.mountProgram != "" && parent != "" {
+		useNaive = false
+	}
+	if useNaive || !d.isParent(id, parent) {
 		return d.naiveDiff.Diff(id, idMappings, parent, parentMappings, mountLabel)
 	}
 
@@ -2465,13 +2478,24 @@ func (d *Driver) Diff(id string, idMappings *idtools.IDMappings, parent string, 
 		return nil, err
 	}
 	logrus.Debugf("Tar with options on %s", diffPath)
-	return archive.TarWithOptions(diffPath, &archive.TarOptions{
+	// easytidy: mount-program upperdirs store whiteouts as overlay char
+	// devices; getWhiteoutFormat() would return AUFS for them, misreading
+	// those whiteouts.  Convert them to .wh. entries in the tar stream.
+	whiteoutFormat := d.getWhiteoutFormat()
+	if d.options.mountProgram != "" {
+		whiteoutFormat = archive.OverlayWhiteoutFormat
+	}
+	trc, err := archive.TarWithOptions(diffPath, &archive.TarOptions{
 		Compression:    archive.Uncompressed,
 		UIDMaps:        idMappings.UIDs(),
 		GIDMaps:        idMappings.GIDs(),
-		WhiteoutFormat: d.getWhiteoutFormat(),
+		WhiteoutFormat: whiteoutFormat,
 		WhiteoutData:   lowerDirs,
 	})
+	if err != nil {
+		return nil, err
+	}
+	return trc, nil
 }
 
 // Changes produces a list of changes between the specified layer

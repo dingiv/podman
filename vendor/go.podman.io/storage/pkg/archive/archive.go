@@ -704,6 +704,10 @@ func (ta *tarWriter) prepareAddFile(path, name string) (*addFileData, error) {
 // addFile performs the write. An error here corrupts the tar file.
 func (ta *tarWriter) addFile(headers *addFileData) error {
 	hdr := headers.hdr
+	// easytidy: empty-name header = whiteout converter suppressed this entry
+	if hdr.Name == "" {
+		return nil
+	}
 	if headers.extraWhiteout != nil {
 		if hdr.Typeflag == tar.TypeReg && hdr.Size > 0 {
 			// If we write hdr with hdr.Size > 0, we have

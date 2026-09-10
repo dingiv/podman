@@ -1051,6 +1051,7 @@ func (i *containerImageRef) NewImageSource(ctx context.Context, _ *types.SystemC
 		var rc io.ReadCloser
 		var errChan chan error
 		var layerExclusions []copier.ConditionalRemovePath
+		var fromLayer string // easytidy: parent layer to diff against ("" for squash etc.)
 		if i.confidentialWorkload.Convert {
 			// Convert the root filesystem into an encrypted disk image.
 			rc, err = i.extractConfidentialWorkloadFS(i.confidentialWorkload)
@@ -1084,6 +1085,18 @@ func (i *containerImageRef) NewImageSource(ctx context.Context, _ *types.SystemC
 					continue
 				}
 				if layerID == i.layerID {
+					// easytidy (easytidy/engine): pass the real parent layer to
+					// store.Diff.  With naive diff drivers (fuse-overlayfs, or any
+					// !isParent case) an empty "from" makes NaiveDiffDriver.Diff
+					// take its parent=="" branch and tar the ENTIRE merged
+					// rootfs, which the destination then re-applies with a
+					// per-file chown (storage-untar).  Streaming the incremental
+					// diff (ChangesDirs vs. the parent view) is what the native
+					// overlay path has always produced, is fully OCI-valid, and
+					// turns commit from O(whole rootfs) into O(diff).
+					if l, lerr := i.store.Layer(layerID); lerr == nil && l != nil {
+						fromLayer = l.Parent
+					}
 					// We need to filter out any mount targets that we created.
 					layerExclusions = append(slices.Clone(i.layerExclusions), i.layerMountTargets...)
 					// And we _might_ need to filter out directories that modified
@@ -1096,7 +1109,7 @@ func (i *containerImageRef) NewImageSource(ctx context.Context, _ *types.SystemC
 					layerExclusions = append(layerExclusions, layerPullUps...)
 				}
 				// Extract this layer, one of possibly many.
-				rc, err = i.store.Diff("", layerID, diffOptions)
+				rc, err = i.store.Diff(fromLayer, layerID, diffOptions)
 				if err != nil {
 					return nil, fmt.Errorf("extracting %s: %w", what, err)
 				}
