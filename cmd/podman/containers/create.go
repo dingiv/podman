@@ -1,7 +1,6 @@
 package containers
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -166,10 +165,6 @@ func create(cmd *cobra.Command, args []string) error {
 	// Include the command used to create the container.
 	s.ContainerCreateCommand = os.Args
 
-	if err := createPodIfNecessary(cmd, s, cliVals.Net); err != nil {
-		return err
-	}
-
 	if cliVals.Replace {
 		if err := replaceContainer(cliVals.Name); err != nil {
 			return err
@@ -185,13 +180,6 @@ func create(cmd *cobra.Command, args []string) error {
 
 	report, err := registry.ContainerEngine().ContainerCreate(registry.Context(), s)
 	if err != nil {
-		// if pod was created as part of run
-		// remove it in case ctr creation fails
-		if err := rmPodIfNecessary(cmd, s); err != nil {
-			if !errors.Is(err, define.ErrNoSuchPod) {
-				logrus.Error(err.Error())
-			}
-		}
 		return err
 	}
 
@@ -431,79 +419,7 @@ func pullImage(cmd *cobra.Command, imageName string, cliVals *entities.Container
 	return imageName, nil
 }
 
-func rmPodIfNecessary(cmd *cobra.Command, s *specgen.SpecGenerator) error {
-	if !strings.HasPrefix(cmd.Flag("pod").Value.String(), "new:") {
-		return nil
-	}
-
-	// errcheck not necessary since
-	// pod creation would've failed
-	podName := strings.Replace(s.Pod, "new:", "", 1)
-	_, err := registry.ContainerEngine().PodRm(context.Background(), []string{podName}, entities.PodRmOptions{})
-	return err
-}
 
 // createPodIfNecessary automatically creates a pod when requested.  if the pod name
 // has the form new:ID, the pod ID is created and the name in the spec generator is replaced
 // with ID.
-func createPodIfNecessary(cmd *cobra.Command, s *specgen.SpecGenerator, netOpts *entities.NetOptions) error {
-	if !strings.HasPrefix(s.Pod, "new:") {
-		return nil
-	}
-	podName := strings.Replace(s.Pod, "new:", "", 1)
-	if len(podName) < 1 {
-		return errors.New("new pod name must be at least one character")
-	}
-
-	var err error
-	uns := specgen.Namespace{NSMode: specgen.Default}
-	if cliVals.UserNS != "" {
-		uns, err = specgen.ParseUserNamespace(cliVals.UserNS)
-		if err != nil {
-			return err
-		}
-	}
-	createOptions := entities.PodCreateOptions{
-		Name:          podName,
-		Infra:         true,
-		Net:           netOpts,
-		CreateCommand: os.Args,
-		Hostname:      s.ContainerBasicConfig.Hostname,
-		Cpus:          cliVals.CPUS,
-		CpusetCpus:    cliVals.CPUSetCPUs,
-		Pid:           cliVals.PID,
-		Userns:        uns,
-		Restart:       cliVals.Restart,
-	}
-	// Unset config values we passed to the pod to prevent them being used twice for the container and pod.
-	s.ContainerBasicConfig.Hostname = ""
-	s.ContainerNetworkConfig = specgen.ContainerNetworkConfig{}
-
-	s.Pod = podName
-	podSpec := entities.PodSpec{}
-	podGen := specgen.NewPodSpecGenerator()
-	podSpec.PodSpecGen = *podGen
-	podGen, err = entities.ToPodSpecGen(podSpec.PodSpecGen, &createOptions)
-	if err != nil {
-		return err
-	}
-
-	infraOpts := entities.NewInfraContainerCreateOptions()
-	infraOpts.Net = netOpts
-	infraOpts.Quiet = true
-	infraOpts.ReadOnly = true
-	infraOpts.ReadWriteTmpFS = false
-	infraOpts.Hostname, err = cmd.Flags().GetString("hostname")
-	if err != nil {
-		return err
-	}
-	podGen.InfraContainerSpec = specgen.NewSpecGenerator("", false)
-	podGen.InfraContainerSpec.NetworkOptions = podGen.NetworkOptions
-	err = specgenutil.FillOutSpecGen(podGen.InfraContainerSpec, &infraOpts, []string{})
-	if err != nil {
-		return err
-	}
-	podSpec.PodSpecGen = *podGen
-	_, err = registry.ContainerEngine().PodCreate(context.Background(), podSpec)
-	return err
-}

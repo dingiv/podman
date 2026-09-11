@@ -141,60 +141,13 @@ func getContainers(cmd *cobra.Command, toComplete string, cType completeType, st
 }
 
 func getPods(cmd *cobra.Command, toComplete string, cType completeType, statuses ...string) ([]string, cobra.ShellCompDirective) {
-	suggestions := []string{}
-	listOpts := entities.PodPSOptions{
-		Filters: make(map[string][]string),
-	}
-	if len(statuses) > 0 {
-		listOpts.Filters["status"] = statuses
-	}
-
-	engine, err := setupContainerEngine(cmd)
-	if err != nil {
-		cobra.CompErrorln(err.Error())
-		return nil, cobra.ShellCompDirectiveNoFileComp
-	}
-	pods, err := engine.PodPs(registry.Context(), listOpts)
-	if err != nil {
-		cobra.CompErrorln(err.Error())
-		return nil, cobra.ShellCompDirectiveNoFileComp
-	}
-
-	for _, pod := range pods {
-		// include ids in suggestions if cType == completeIDs or
-		// more then 2 chars are typed and cType == completeDefault
-		if ((len(toComplete) > 1 && cType == completeDefault) ||
-			cType == completeIDs) && strings.HasPrefix(pod.Id, toComplete) {
-			suggestions = append(suggestions, pod.Id[0:12])
-		}
-		// include name in suggestions
-		if cType != completeIDs && strings.HasPrefix(pod.Name, toComplete) {
-			suggestions = append(suggestions, pod.Name)
-		}
-	}
-	return suggestions, cobra.ShellCompDirectiveNoFileComp
+	// easytidy: pods feature removed
+	return nil, cobra.ShellCompDirectiveNoFileComp
 }
 
 func getQuadlets(cmd *cobra.Command, toComplete string) ([]string, cobra.ShellCompDirective) {
-	suggestions := []string{}
-	lsOpts := entities.QuadletListOptions{}
-	engine, err := setupContainerEngine(cmd)
-	if err != nil {
-		cobra.CompErrorln(err.Error())
-		return nil, cobra.ShellCompDirectiveNoFileComp
-	}
-	quadlets, err := engine.QuadletList(registry.Context(), lsOpts)
-	if err != nil {
-		cobra.CompErrorln(err.Error())
-		return nil, cobra.ShellCompDirectiveNoFileComp
-	}
-
-	for _, q := range quadlets {
-		if strings.HasPrefix(q.Name, toComplete) {
-			suggestions = append(suggestions, q.Name)
-		}
-	}
-	return suggestions, cobra.ShellCompDirectiveNoFileComp
+	// easytidy: dependent feature removed
+	return nil, cobra.ShellCompDirectiveNoFileComp
 }
 
 func getVolumes(cmd *cobra.Command, toComplete string) ([]string, cobra.ShellCompDirective) {
@@ -265,54 +218,13 @@ func getImages(cmd *cobra.Command, toComplete string) ([]string, cobra.ShellComp
 }
 
 func getManifestListMembers(cmd *cobra.Command, list, toComplete string) ([]string, cobra.ShellCompDirective) {
-	suggestions := []string{}
-	inspectOptions := entities.ManifestInspectOptions{}
-
-	engine, err := setupImageEngine(cmd)
-	if err != nil {
-		cobra.CompErrorln(err.Error())
-		return nil, cobra.ShellCompDirectiveNoFileComp
-	}
-	listData, err := engine.ManifestInspect(registry.Context(), list, inspectOptions)
-	if err != nil {
-		cobra.CompErrorln(err.Error())
-		return nil, cobra.ShellCompDirectiveNoFileComp
-	}
-
-	for _, item := range listData.Manifests {
-		if strings.HasPrefix(item.Digest.String(), toComplete) {
-			suggestions = append(suggestions, item.Digest.String())
-		}
-	}
-	return suggestions, cobra.ShellCompDirectiveNoFileComp
+	// easytidy: dependent feature removed
+	return nil, cobra.ShellCompDirectiveNoFileComp
 }
 
 func getSecrets(cmd *cobra.Command, toComplete string, cType completeType) ([]string, cobra.ShellCompDirective) {
-	suggestions := []string{}
-
-	engine, err := setupContainerEngine(cmd)
-	if err != nil {
-		cobra.CompErrorln(err.Error())
-		return nil, cobra.ShellCompDirectiveNoFileComp
-	}
-	secrets, err := engine.SecretList(registry.Context(), entities.SecretListRequest{})
-	if err != nil {
-		cobra.CompErrorln(err.Error())
-		return nil, cobra.ShellCompDirectiveNoFileComp
-	}
-
-	for _, s := range secrets {
-		// works the same as in getNetworks
-		if ((len(toComplete) > 1 && cType == completeDefault) ||
-			cType == completeIDs) && strings.HasPrefix(s.ID, toComplete) {
-			suggestions = append(suggestions, s.ID[0:12])
-		}
-		// include name in suggestions
-		if cType != completeIDs && strings.HasPrefix(s.Spec.Name, toComplete) {
-			suggestions = append(suggestions, s.Spec.Name)
-		}
-	}
-	return suggestions, cobra.ShellCompDirectiveNoFileComp
+	// easytidy: dependent feature removed
+	return nil, cobra.ShellCompDirectiveNoFileComp
 }
 
 func getRegistries() ([]string, cobra.ShellCompDirective) {
@@ -355,26 +267,8 @@ func getNetworks(cmd *cobra.Command, toComplete string, cType completeType) ([]s
 }
 
 func getArtifacts(cmd *cobra.Command, toComplete string) ([]string, cobra.ShellCompDirective) {
-	suggestions := []string{}
-	listOptions := entities.ArtifactListOptions{}
-
-	engine, err := setupImageEngine(cmd)
-	if err != nil {
-		cobra.CompErrorln(err.Error())
-		return nil, cobra.ShellCompDirectiveNoFileComp
-	}
-	artifacts, err := engine.ArtifactList(registry.Context(), listOptions)
-	if err != nil {
-		cobra.CompErrorln(err.Error())
-		return nil, cobra.ShellCompDirectiveNoFileComp
-	}
-
-	for _, artifact := range artifacts {
-		if strings.HasPrefix(artifact.Name, toComplete) {
-			suggestions = append(suggestions, artifact.Name)
-		}
-	}
-	return suggestions, cobra.ShellCompDirectiveNoFileComp
+	// easytidy: dependent feature removed
+	return nil, cobra.ShellCompDirectiveNoFileComp
 }
 
 func getCommands(cmd *cobra.Command, toComplete string) ([]string, cobra.ShellCompDirective) {

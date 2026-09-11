@@ -431,19 +431,7 @@ func (ir *ImageEngine) Push(ctx context.Context, source string, destination stri
 		}
 		return &entities.ImagePushReport{ManifestDigest: manifestDigest.String()}, nil
 	}
-	// If the image could not be found, we may be referring to a manifest
-	// list but could not find a matching image instance in the local
-	// containers storage. In that case, fall back and attempt to push the
-	// (entire) manifest. Don't fall back if a specific platform was requested.
-	if options.OS == "" && options.Arch == "" && options.Variant == "" {
-		if _, err := ir.Libpod.LibimageRuntime().LookupManifestList(source); err == nil {
-			pushedManifestString, err := ir.ManifestPush(ctx, source, destination, options)
-			if err != nil {
-				return nil, err
-			}
-			return &entities.ImagePushReport{ManifestDigest: pushedManifestString}, nil
-		}
-	}
+	// easytidy: manifest feature removed.
 	return nil, pushError
 }
 

@@ -1,16 +1,16 @@
-//go:build (amd64 || arm64) && !windows
+//go:build !windows
 
 package main
 
 import (
 	"errors"
-
-	"go.podman.io/podman/v6/pkg/machine/define"
+	"net/url"
 )
 
-func extractConnectionString(podmanSocket *define.VMFile, _ *define.VMFile) (string, error) {
-	if podmanSocket == nil {
-		return "", errors.New("socket of machine is not set")
+// easytidy: machine feature removed; compose only works against the local socket.
+func getMachineConn(connection string, parsedConnection *url.URL) (string, error) {
+	if connection != "" {
+		return "", errors.New("machine connections are not supported in this build")
 	}
-	return "unix://" + podmanSocket.Path, nil
+	return parsedConnection.String(), nil
 }

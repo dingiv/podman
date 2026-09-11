@@ -100,17 +100,7 @@ func (ic *ContainerEngine) SystemPrune(ctx context.Context, options entities.Sys
 	for found {
 		found = false
 
-		// TODO: Figure out cleaner way to handle all of the different PruneOptions
-		// Remove all unused pods.
-		podPruneReports, err := ic.prunePodHelper(ctx)
-		if err != nil {
-			return nil, err
-		}
-		if len(podPruneReports) > 0 {
-			found = true
-		}
-
-		systemPruneReport.PodPruneReport = append(systemPruneReport.PodPruneReport, podPruneReports...)
+		// easytidy: pods feature removed.
 
 		// Remove all unused containers.
 		containerPruneOptions := entities.ContainerPruneOptions{}

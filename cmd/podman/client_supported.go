@@ -1,15 +1,6 @@
-//go:build amd64 || arm64
+//go:build linux
 
 package main
 
-import (
-	"go.podman.io/podman/v6/pkg/machine/provider"
-)
-
-func getProvider() (string, error) {
-	p, err := provider.Get()
-	if err != nil {
-		return "", err
-	}
-	return p.VMType().String(), nil
-}
+// easytidy: machine feature removed; no provider to report.
+func getProvider() (string, error) { return "native", nil }

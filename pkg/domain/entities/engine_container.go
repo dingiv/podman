@@ -15,7 +15,6 @@ import (
 type ContainerCopyFunc = types.ContainerCopyFunc
 
 type ContainerEngine interface { //nolint:interfacebloat
-	AutoUpdate(ctx context.Context, options AutoUpdateOptions) ([]*AutoUpdateReport, []error)
 	Config(ctx context.Context) (*config.Config, error)
 	ContainerAttach(ctx context.Context, nameOrID string, options AttachOptions) error
 	ContainerCheckpoint(ctx context.Context, namesOrIds []string, options CheckpointOptions) ([]*CheckpointReport, error)
@@ -58,13 +57,8 @@ type ContainerEngine interface { //nolint:interfacebloat
 	ContainerWait(ctx context.Context, namesOrIds []string, options WaitOptions) ([]WaitReport, error)
 	Diff(ctx context.Context, namesOrIds []string, options DiffOptions) (*DiffReport, error)
 	Events(ctx context.Context, opts EventsOptions) error
-	GenerateSpec(ctx context.Context, opts *GenerateSpecOptions) (*GenerateSpecReport, error)
-	GenerateSystemd(ctx context.Context, nameOrID string, opts GenerateSystemdOptions) (*GenerateSystemdReport, error)
-	GenerateKube(ctx context.Context, nameOrIDs []string, opts GenerateKubeOptions) (*GenerateKubeReport, error)
 	SystemPrune(ctx context.Context, options SystemPruneOptions) (*SystemPruneReport, error)
-	HealthCheckRun(ctx context.Context, nameOrID string, options HealthCheckOptions) (*define.HealthCheckResults, error)
 	Info(ctx context.Context) (*define.Info, error)
-	KubeApply(ctx context.Context, body io.Reader, opts ApplyOptions) error
 	Locks(ctx context.Context) (*LocksReport, error)
 	Migrate(ctx context.Context, options SystemMigrateOptions) error
 	NetworkConnect(ctx context.Context, networkname string, options NetworkConnectOptions) error
@@ -77,37 +71,9 @@ type ContainerEngine interface { //nolint:interfacebloat
 	NetworkPrune(ctx context.Context, options NetworkPruneOptions) ([]*NetworkPruneReport, error)
 	NetworkReload(ctx context.Context, names []string, options NetworkReloadOptions) ([]*NetworkReloadReport, error)
 	NetworkRm(ctx context.Context, namesOrIds []string, options NetworkRmOptions) ([]*NetworkRmReport, error)
-	PlayKube(ctx context.Context, body io.Reader, opts PlayKubeOptions) (*PlayKubeReport, error)
-	PlayKubeDown(ctx context.Context, body io.Reader, opts PlayKubeDownOptions) (*PlayKubeReport, error)
-	PodCreate(ctx context.Context, specg PodSpec) (*PodCreateReport, error)
-	PodClone(ctx context.Context, podClone PodCloneOptions) (*PodCloneReport, error)
-	PodExists(ctx context.Context, nameOrID string) (*BoolReport, error)
-	PodInspect(ctx context.Context, namesOrID []string, options InspectOptions) ([]*PodInspectReport, []error, error)
-	PodKill(ctx context.Context, namesOrIds []string, options PodKillOptions) ([]*PodKillReport, error)
-	PodLogs(ctx context.Context, pod string, options PodLogsOptions) error
-	PodPause(ctx context.Context, namesOrIds []string, options PodPauseOptions) ([]*PodPauseReport, error)
-	PodPrune(ctx context.Context, options PodPruneOptions) ([]*PodPruneReport, error)
-	PodPs(ctx context.Context, options PodPSOptions) ([]*ListPodsReport, error)
-	PodRestart(ctx context.Context, namesOrIds []string, options PodRestartOptions) ([]*PodRestartReport, error)
-	PodRm(ctx context.Context, namesOrIds []string, options PodRmOptions) ([]*PodRmReport, error)
-	PodStart(ctx context.Context, namesOrIds []string, options PodStartOptions) ([]*PodStartReport, error)
-	PodStats(ctx context.Context, namesOrIds []string, options PodStatsOptions) ([]*PodStatsReport, error)
-	PodStop(ctx context.Context, namesOrIds []string, options PodStopOptions) ([]*PodStopReport, error)
-	PodTop(ctx context.Context, options PodTopOptions) (*StringSliceReport, error)
-	PodUnpause(ctx context.Context, namesOrIds []string, options PodunpauseOptions) ([]*PodUnpauseReport, error)
-	QuadletExists(ctx context.Context, name string) (*BoolReport, error)
-	QuadletInstall(ctx context.Context, pathsOrURLs []string, options QuadletInstallOptions) (*QuadletInstallReport, error)
-	QuadletList(ctx context.Context, options QuadletListOptions) ([]*ListQuadlet, error)
-	QuadletPrint(ctx context.Context, quadlet string) (string, error)
-	QuadletRemove(ctx context.Context, quadlets []string, options QuadletRemoveOptions) (*QuadletRemoveReport, error)
 	Renumber(ctx context.Context) error
 	Reset(ctx context.Context) error
 	SetupRootless(ctx context.Context, noMoveProcess bool, cgroupMode string) error
-	SecretCreate(ctx context.Context, name string, reader io.Reader, options SecretCreateOptions) (*SecretCreateReport, error)
-	SecretInspect(ctx context.Context, nameOrIDs []string, options SecretInspectOptions) ([]*SecretInfoReport, []error, error)
-	SecretList(ctx context.Context, opts SecretListRequest) ([]*SecretInfoReport, error)
-	SecretRm(ctx context.Context, nameOrID []string, opts SecretRmOptions) ([]*SecretRmReport, error)
-	SecretExists(ctx context.Context, nameOrID string) (*BoolReport, error)
 	Shutdown(ctx context.Context)
 	SystemDf(ctx context.Context, options SystemDfOptions) (*SystemDfReport, error)
 	SystemCheck(ctx context.Context, options SystemCheckOptions) (*SystemCheckReport, error)

@@ -97,10 +97,7 @@ func reset(_ *cobra.Command, _ []string) {
 		logrus.Error(err)
 	}
 
-	// Shutdown podman-machine and delete all machine files
-	if err := resetMachine(); err != nil {
-		logrus.Error(err)
-	}
+	// easytidy: machine feature removed
 
 	os.Exit(0)
 }
