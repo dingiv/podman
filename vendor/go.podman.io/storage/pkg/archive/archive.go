@@ -42,6 +42,9 @@ type (
 		ExcludePatterns   []string
 		Compression       Compression
 		NoLchown          bool
+		// easytidy: skip duplicate entry paths when writing (fuse whiteout
+		// markers can collide after conversion); see tarWriter.SuppressDupPaths
+		SuppressWhiteoutDuplicates bool
 		UIDMaps           []idtools.IDMap
 		GIDMaps           []idtools.IDMap
 		IgnoreChownErrors bool
@@ -546,6 +549,12 @@ type tarWriter struct {
 
 	// Timestamp, if set, will be set in each header as create/mod/access time
 	Timestamp *time.Time
+
+	// easytidy: suppress duplicate entry paths (fuse-overlayfs stores both
+	// AUFS-style and overlay-style whiteout markers, which can collide after
+	// conversion).  When enabled, a second entry with the same path is skipped.
+	SuppressDupPaths bool
+	emittedPaths     map[string]struct{}
 }
 
 func newTarWriter(idMapping *idtools.IDMappings, writer io.Writer, chownOpts *idtools.IDPair, timestamp *time.Time) *tarWriter {
@@ -707,6 +716,20 @@ func (ta *tarWriter) addFile(headers *addFileData) error {
 	// easytidy: empty-name header = whiteout converter suppressed this entry
 	if hdr.Name == "" {
 		return nil
+	}
+	// easytidy: skip duplicate entry paths when enabled
+	if ta.SuppressDupPaths {
+		if _, dup := ta.emittedPaths[hdr.Name]; dup {
+			return nil
+		}
+		ta.emittedPaths[hdr.Name] = struct{}{}
+		if headers.extraWhiteout != nil {
+			if _, dup := ta.emittedPaths[headers.extraWhiteout.Name]; dup {
+				headers.extraWhiteout = nil
+			} else {
+				ta.emittedPaths[headers.extraWhiteout.Name] = struct{}{}
+			}
+		}
 	}
 	if headers.extraWhiteout != nil {
 		if hdr.Typeflag == tar.TypeReg && hdr.Size > 0 {
@@ -977,6 +1000,10 @@ func tarWithOptionsTo(dest io.WriteCloser, srcPath string, options *TarOptions) 
 		options.Timestamp,
 	)
 	ta.WhiteoutConverter = GetWhiteoutConverter(options.WhiteoutFormat, options.WhiteoutData)
+	if options.SuppressWhiteoutDuplicates {
+		ta.SuppressDupPaths = true
+		ta.emittedPaths = make(map[string]struct{})
+	}
 	ta.CopyPass = options.CopyPass
 
 	includeFiles := options.IncludeFiles

@@ -2491,6 +2491,8 @@ func (d *Driver) Diff(id string, idMappings *idtools.IDMappings, parent string, 
 		GIDMaps:        idMappings.GIDs(),
 		WhiteoutFormat: whiteoutFormat,
 		WhiteoutData:   lowerDirs,
+		// easytidy: fuse stores duplicate whiteout markers; skip collisions
+		SuppressWhiteoutDuplicates: d.options.mountProgram != "",
 	})
 	if err != nil {
 		return nil, err
