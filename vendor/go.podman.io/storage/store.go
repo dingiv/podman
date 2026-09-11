@@ -688,6 +688,14 @@ type LayerOptions struct {
 	// and reliably known by the caller.
 	// Use the default "" if this fields is not applicable or the value is not known.
 	UncompressedDigest digest.Digest
+	// EasyTidySkipIDMapUpdate is true when the caller guarantees that the
+	// layer's on-disk file ownership already matches the requested ID
+	// mapping (e.g. the layer was produced by a commit with the identical
+	// mapping), so the driver must NOT run the whole-tree UpdateLayerIDMap
+	// chown pass at creation time.  Skipping it is only safe when the
+	// guarantee actually holds; otherwise files will show wrong owners
+	// inside the container.
+	EasyTidySkipIDMapUpdate bool
 	// True is the layer info can be treated as volatile
 	Volatile bool
 	// BigData is a set of items which should be stored with the layer.
@@ -757,6 +765,12 @@ type ContainerOptions struct {
 	StorageOpt map[string]string
 	// Metadata is caller-specified metadata associated with the container.
 	Metadata string
+	// EasyTidySkipLayerIDMapUpdate skips the whole-tree UpdateLayerIDMap
+	// chown pass when creating the container's layer.  Only safe when the
+	// caller guarantees the image top layer's on-disk ownership already
+	// matches the requested ID mapping (same-mapping fast path).
+	// See LayerOptions.EasyTidySkipIDMapUpdate.
+	EasyTidySkipLayerIDMapUpdate bool
 	// BigData is a set of items which should be stored for the container.
 	BigData []ContainerBigDataOption
 }
@@ -1930,6 +1944,7 @@ func (s *store) CreateContainer(id string, names []string, image, layer, metadat
 		options.MountOpts = copySlicePreferringNil(cOptions.MountOpts)
 		options.StorageOpt = copyMapPreferringNil(cOptions.StorageOpt)
 		options.BigData = copyContainerBigDataOptionSlice(cOptions.BigData)
+		options.EasyTidySkipLayerIDMapUpdate = cOptions.EasyTidySkipLayerIDMapUpdate
 	}
 	if options.HostUIDMapping {
 		options.UIDMap = nil
@@ -2041,6 +2056,7 @@ func (s *store) CreateContainer(id string, names []string, image, layer, metadat
 		// Normally layers for containers are volatile only if the container is.
 		// But in transient store mode, all container layers are volatile.
 		Volatile: options.Volatile || s.transientStore,
+		EasyTidySkipIDMapUpdate: options.EasyTidySkipLayerIDMapUpdate,
 	}
 	useHostMapping := idMappingsOptions.HostUIDMapping || s.canUseShifting(uidMap, gidMap)
 	layerOptions.IDMappingOptions = LayerIDMappingOptions{

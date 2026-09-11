@@ -1688,6 +1688,7 @@ func (r *layerStore) create(id string, parentLayer *Layer, names []string, mount
 	}
 
 	if oldMappings != nil &&
+		!moreOptions.EasyTidySkipIDMapUpdate &&
 		(!reflect.DeepEqual(oldMappings.UIDs(), idMappings.UIDs()) || !reflect.DeepEqual(oldMappings.GIDs(), idMappings.GIDs())) {
 		if err = r.driver.UpdateLayerIDMap(id, oldMappings, idMappings, mountLabel); err != nil {
 			cleanupFailureContext = "in UpdateLayerIDMap"

@@ -305,6 +305,21 @@ func WithStorageOpts(storageOpts map[string]string) CtrCreateOption {
 	}
 }
 
+// WithEasyTidyFastLayer skips the whole-tree UpdateLayerIDMap chown pass
+// when creating the container's RW layer from the image top layer.
+// Only safe when the caller guarantees the image top layer's on-disk
+// ownership already matches the container's ID mapping (easytidy
+// same-mapping rebuild fast path).
+func WithEasyTidyFastLayer() CtrCreateOption {
+	return func(ctr *Container) error {
+		if ctr.valid {
+			return define.ErrCtrFinalized
+		}
+		ctr.config.EasyTidyFastLayer = true
+		return nil
+	}
+}
+
 // WithDefaultMountsFile sets the file to look at for default mounts (mainly
 // secrets).
 // Note we are not saving this in the database as it is for testing purposes

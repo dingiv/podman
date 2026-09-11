@@ -177,6 +177,12 @@ type ContainerRootFSConfig struct {
 	// Volatile specifies whether the container storage can be optimized
 	// at the cost of not syncing all the dirty files in memory.
 	Volatile bool `json:"volatile,omitempty"`
+	// EasyTidyFastLayer skips the whole-tree UpdateLayerIDMap chown pass
+	// when the container's RW layer is created from the image top layer.
+	// Only valid when the caller guarantees the image top layer's on-disk
+	// ownership already matches the container's ID mapping (easytidy
+	// same-mapping rebuild fast path).
+	EasyTidyFastLayer bool `json:"easyTidyFastLayer,omitempty"`
 	// Passwd allows to user to override podman's passwd/group file setup
 	Passwd *bool `json:"passwd,omitempty"`
 	// ChrootDirs is an additional set of directories that need to be

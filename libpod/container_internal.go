@@ -501,6 +501,7 @@ func (c *Container) setupStorage(ctx context.Context) error {
 	}
 
 	options.Volatile = c.config.Volatile
+	options.EasyTidySkipLayerIDMapUpdate = c.config.EasyTidyFastLayer
 
 	c.setupStorageMapping(&options.IDMappingOptions, &c.config.IDMappings)
 

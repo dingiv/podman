@@ -33,6 +33,19 @@ type specGeneratorWire struct {
 // the new container ID on success along with any warnings.
 func CreateContainer(w http.ResponseWriter, r *http.Request) {
 	runtime := r.Context().Value(api.RuntimeKey).(*libpod.Runtime)
+	// easytidy extension: ?easytidy_fast=true skips the whole-tree
+	// UpdateLayerIDMap chown pass when creating the RW layer.  Callers
+	// must guarantee the image top layer's on-disk ownership already
+	// matches the container's ID mapping (easytidy same-mapping rebuild).
+	easyTidyFast := false
+	if v := r.URL.Query().Get("easytidy_fast"); v != "" {
+		var err error
+		easyTidyFast, err = strconv.ParseBool(v)
+		if err != nil {
+			utils.Error(w, http.StatusBadRequest, fmt.Errorf("invalid easytidy_fast parameter: %w", err))
+			return
+		}
+	}
 	conf, err := runtime.GetConfigNoCopy()
 	if err != nil {
 		utils.InternalServerError(w, err)
@@ -111,7 +124,11 @@ func CreateContainer(w http.ResponseWriter, r *http.Request) {
 		utils.InternalServerError(w, err)
 		return
 	}
-	ctr, err := generate.ExecuteCreate(r.Context(), runtime, rtSpec, spec, false, opts...)
+	var createOpts []libpod.CtrCreateOption
+	if easyTidyFast {
+		createOpts = append(createOpts, libpod.WithEasyTidyFastLayer())
+	}
+	ctr, err := generate.ExecuteCreate(r.Context(), runtime, rtSpec, spec, false, append(opts, createOpts...)...)
 	if err != nil {
 		utils.InternalServerError(w, err)
 		return
