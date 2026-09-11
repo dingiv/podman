@@ -125,14 +125,8 @@ func (i *inspector) inspect(namesOrIDs []string) error {
 			data = append(data, ctrData[i])
 		}
 	case common.PodType:
-		podData, allErrs, err := i.containerEngine.PodInspect(ctx, namesOrIDs, i.options)
-		if err != nil {
-			return err
-		}
-		errs = allErrs
-		for i := range podData {
-			data = append(data, podData[i])
-		}
+		// easytidy: pods feature removed
+		return fmt.Errorf("pods support removed")
 
 	case common.NetworkType:
 		networkData, allErrs, err := registry.ContainerEngine().NetworkInspect(ctx, namesOrIDs, i.options)
@@ -153,14 +147,8 @@ func (i *inspector) inspect(namesOrIDs []string) error {
 			data = append(data, volumeData[i])
 		}
 	case common.ArtifactType:
-		for _, name := range namesOrIDs {
-			artifactData, err := i.imageEngine.ArtifactInspect(ctx, name, entities.ArtifactInspectOptions{})
-			if err != nil {
-				errs = append(errs, err)
-				continue
-			}
-			data = append(data, artifactData)
-		}
+		// easytidy: artifacts feature removed
+		return fmt.Errorf("artifacts support removed")
 	default:
 		return fmt.Errorf("invalid type %q: must be %q, %q, %q, %q, %q, %q, or %q", i.options.Type,
 			common.ImageType, common.ContainerType, common.PodType, common.NetworkType, common.VolumeType, common.ArtifactType, common.AllType)
@@ -238,19 +226,6 @@ func (i *inspector) inspectAll(ctx context.Context, namesOrIDs []string) ([]any,
 			continue
 		}
 
-		podData, errs, err := i.containerEngine.PodInspect(ctx, []string{name}, i.options)
-		if err != nil {
-			return nil, nil, err
-		}
-		if len(errs) == 0 {
-			data = append(data, podData[0])
-			continue
-		}
-		artifactData, err := i.imageEngine.ArtifactInspect(ctx, name, entities.ArtifactInspectOptions{})
-		if err == nil {
-			data = append(data, artifactData)
-			continue
-		}
 		if len(errs) > 0 {
 			allErrs = append(allErrs, fmt.Errorf("no such object: %q", name))
 			continue

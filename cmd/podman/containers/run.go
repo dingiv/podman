@@ -219,10 +219,6 @@ func run(cmd *cobra.Command, args []string) error {
 
 	runOpts.Spec = s
 
-	if err := createPodIfNecessary(cmd, s, cliVals.Net); err != nil {
-		return err
-	}
-
 	if s.HealthConfig == nil {
 		s.HealthConfig, err = common.GetHealthCheckOverrideConfig(cmd, &cliVals)
 		if err != nil {
@@ -236,13 +232,6 @@ func run(cmd *cobra.Command, args []string) error {
 		registry.SetExitCode(report.ExitCode)
 	}
 	if err != nil {
-		// if pod was created as part of run
-		// remove it in case ctr creation fails
-		if err := rmPodIfNecessary(cmd, s); err != nil {
-			if !errors.Is(err, define.ErrNoSuchPod) {
-				logrus.Error(err.Error())
-			}
-		}
 		return err
 	}
 

@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 
 	"github.com/spf13/cobra"
@@ -13,7 +12,6 @@ import (
 	"go.podman.io/image/v5/types"
 	"go.podman.io/podman/v6/cmd/podman/common"
 	"go.podman.io/podman/v6/cmd/podman/registry"
-	"go.podman.io/podman/v6/pkg/domain/entities"
 )
 
 type loginOptionsWrapper struct {
@@ -77,27 +75,8 @@ func login(cmd *cobra.Command, args []string) error {
 
 	secretName := cmd.Flag("secret").Value.String()
 	if len(secretName) > 0 {
-		if len(loginOptions.Password) > 0 {
-			return errors.New("--secret can not be used with --password options")
-		}
-		if len(loginOptions.Username) == 0 {
-			loginOptions.Username = secretName
-		}
-		inspectOpts := entities.SecretInspectOptions{
-			ShowSecret: true,
-		}
-		inspected, errs, _ := registry.ContainerEngine().SecretInspect(context.Background(), []string{secretName}, inspectOpts)
-
-		if len(errs) > 0 && errs[0] != nil {
-			return errs[0]
-		}
-		if len(inspected) == 0 {
-			return fmt.Errorf("no secrets found for %q", secretName)
-		}
-		if len(inspected) > 1 {
-			return fmt.Errorf("unexpected error SecretInspect of a single secret should never return more then one secrets %q", secretName)
-		}
-		loginOptions.Password = inspected[0].SecretData
+		// easytidy: secrets feature removed
+		return errors.New("--secret is not supported in this build")
 	}
 
 	sysCtx := &types.SystemContext{
