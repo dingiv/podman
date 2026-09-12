@@ -1,0 +1,36 @@
+#!/usr/bin/make -f
+# easytidy-podman：官方 podman 无官方 deb（发行版源打包维护）；
+# 本 debian/ 对齐其结构，但构建走 easytidy 的 Go 工具链与精简 tag 集。
+
+# easytidy Go 工具链（与日常构建一致）。GOROOT 强制覆盖——用户 shell 可能带
+# gvm 等残缺 GOROOT（实测 jiugui5209 旧路径导致构建失败）；换工具链用
+# EASYTIDY_GOROOT 环境变量。
+export GOROOT := $(or $(EASYTIDY_GOROOT),$(HOME)/tools/go)
+export PATH := $(GOROOT)/bin:$(PATH)
+BUILDTAGS := seccomp exclude_graphdriver_btrfs containers_image_openpgp
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	go build -tags "$(BUILDTAGS)" -o podman ./cmd/podman
+
+# 不调上游 install.bin（依赖 bin/podman-remote 等多个产物）；安装清单见
+# debian/install（根目录 podman → /usr/local/bin）
+# /usr/local/bin 单文件安装：dh_usrlocal 期望目录语义，跳过（无 postinst 需求）
+override_dh_usrlocal:
+
+# Go 大二进制 dwz 压缩无收益且报错，跳过
+override_dh_dwz:
+
+override_dh_strip:
+
+override_dh_auto_install:
+
+# 上游测试套件过重（部分需要 root/网络），打包时不跑；CI 另行覆盖
+override_dh_auto_test:
+
+override_dh_auto_clean:
+	# 不调 dh_auto_clean：上游 Makefile distclean 依赖系统 go（机器上不可用），
+	# 我们的单二进制构建只需删产物
+	rm -f podman

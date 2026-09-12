@@ -59,3 +59,6 @@ contrib/win-installer/*.wixobj
 contrib/win-installer/*.wixpdb
 contrib/win-installer/*.log
 podman-cleanup-tracer.log*
+
+# easytidy deb 构建中间产物
+/podman

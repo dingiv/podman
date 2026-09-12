@@ -1,0 +1,9 @@
+easytidy-podman (6.2.0-dev+easytidy3) unstable; urgency=medium
+
+  * Minimal easytidy fork of podman 6.2: fast same-mapping rebuild
+    (incremental commit diff, easytidy_fast commit/create parameters),
+    subsystem removal (machine/kube/farm/secrets/pods/manifest/...).
+  * Built with libseccomp (tag seccomp); default profile provided by
+    golang-github-containers-common.
+
+ -- EasyTidy <dingiv456@163.com>  Sat, 13 Sep 2026 10:00:00 +0800

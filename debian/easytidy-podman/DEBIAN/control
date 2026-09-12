@@ -1,0 +1,20 @@
+Package: easytidy-podman
+Version: 6.2.0-dev+easytidy3
+Architecture: amd64
+Maintainer: EasyTidy <dingiv456@163.com>
+Installed-Size: 59997
+Depends: libseccomp2 (>= 2.5), conmon, catatonit, crun, uidmap, passt, netavark, aardvark-dns, fuse-overlayfs, golang-github-containers-common
+Conflicts: podman
+Breaks: podman
+Replaces: podman
+Provides: podman
+Section: utils
+Priority: optional
+Homepage: https://github.com/dingiv/podman
+Description: EasyTidy minimal Podman (easytidy fork of podman 6.2)
+ Minimal podman engine for EasyTidy: fast same-mapping rebuild
+ (incremental commit diff + easytidy_fast commit/create API parameters)
+ and removal of subsystems EasyTidy does not use (machine, kube, farm,
+ secrets, pods, manifest, quadlet, ...).
+ Keeps the Docker-compat + libpod API surface and the CLI subset
+ required by VS Code Dev Containers.

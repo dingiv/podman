@@ -1,0 +1,8 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: easytidy-podman
+Source: https://github.com/dingiv/podman
+
+Files: *
+Copyright: 2013-2026 the podman upstream authors; 2026 EasyTidy
+License: Apache-2.0
+Comment: fork of containers/podman (Apache License 2.0); see LICENSE.
