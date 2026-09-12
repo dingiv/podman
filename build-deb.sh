@@ -13,6 +13,7 @@ version=$(dpkg-parsechangelog -S Version)
 echo "==> 构建 easytidy-podman ${version}"
 dpkg-buildpackage -us -uc -b
 
-deb="../easytidy-podman_${version}_amd64.deb"
+mkdir -p bundle
+deb="bundle/easytidy-podman_${version}_amd64.deb"
 echo "==> 产物：${deb}"
 dpkg-deb --info "$deb" | sed -n '1,12p'
