@@ -7,6 +7,7 @@ import (
 
 	"bytes"
 	"encoding/base64"
+	stdjson "encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -94,7 +95,31 @@ const ( // Paths within a per-layer directory
 	// lowerFile when present.  The old lowerFile is still written
 	// for backward compatibility with older tools.
 	lowerLayersFile = "lower-layers"
+
+	// easytidy (easytidy/engine): per-layer record of the id translation the
+	// id-shift scheme applied to the upperdir (container view <-> storage
+	// view).  Written on every shifted mount, removed on unshifted mounts.
+	// The fast Diff path reads it to translate raw on-disk ids to the
+	// container view.  Absent == identity (unshifted upperdir): the raw ids
+	// are already the container view.
+	layerIDMapFile = "idmap"
 )
+
+// easytidy: persisted upperdir id translation.
+type layerIDMap struct {
+	UIDMaps []idtools.IDMap `json:"uidmap"`
+	GIDMaps []idtools.IDMap `json:"gidmap"`
+}
+
+func marshalLayerIDMap(m layerIDMap) ([]byte, error) {
+	return stdjson.Marshal(m)
+}
+
+func unmarshalLayerIDMap(data []byte) (layerIDMap, error) {
+	var m layerIDMap
+	err := stdjson.Unmarshal(data, &m)
+	return m, err
+}
 
 const ( // Keys within DriverWithDifferOutput.Artifacts
 	tocArtifact             = "toc"
@@ -1867,6 +1892,11 @@ func (d *Driver) get(id string, disableShifting bool, options graphdriver.MountO
 		return "", fmt.Errorf("creating overlay mount to %s, mount_data=%q: %w", mountTarget, mountData, err)
 	}
 
+	// easytidy: after a successful mount, record the id translation now in
+	// effect for this layer's upperdir (no-op without a mount program; for
+	// the mount program it clears stale records on unshifted mounts).
+	d.storeLayerIDMapping(dir, disableShifting, options)
+
 	return mergedDir, nil
 }
 
@@ -2448,16 +2478,19 @@ func (d *Driver) DiffSize(id string, idMappings *idtools.IDMappings, parent stri
 // Diff produces an archive of the changes between the specified
 // layer and its parent layer which may be "".
 func (d *Driver) Diff(id string, idMappings *idtools.IDMappings, parent string, parentMappings *idtools.IDMappings, mountLabel string) (io.ReadCloser, error) {
-	// easytidy (easytidy/engine): with a mount program (fuse-overlayfs) the
-	// upperdir uses the same layout/whiteout convention as the native path, so
-	// tarring the diff directory directly is correct and O(diff).  The naive
-	// path is unusable here for two reasons: ChangesDirs compares the
+	// easytidy (easytidy/engine): fast incremental diff for BOTH the mount-program
+	// and native paths.  In both cases the upperdir uses the overlay whiteout
+	// convention, so tarring the diff directory directly is correct and O(diff).
+	// The naive path is unusable here for two reasons: ChangesDirs compares the
 	// keep-id-mapped container view against an unmapped parent view (every
 	// file looks changed), and with parent=="" NaiveDiffDriver.Diff tars the
 	// ENTIRE merged rootfs, which the destination then re-applies with a
 	// per-file chown (storage-untar).
+	// Native-only caveat: with metacopy enabled the upperdir contains
+	// metadata-only placeholder files; tar those directly and their content
+	// (living in a lower layer) is lost, so fall back to the naive path.
 	useNaive := d.useNaiveDiff()
-	if d.options.mountProgram != "" && parent != "" {
+	if parent != "" && !d.usingMetacopy {
 		useNaive = false
 	}
 	if useNaive || !d.isParent(id, parent) {
@@ -2466,6 +2499,11 @@ func (d *Driver) Diff(id string, idMappings *idtools.IDMappings, parent string, 
 
 	if idMappings == nil {
 		idMappings = &idtools.IDMappings{}
+	}
+	// easytidy: translate the raw upperdir ids to the container view using the
+	// mapping recorded at mount time; absent (unshifted upperdir) → passthrough.
+	if m := d.loadLayerIDMapping(id); m != nil && !m.Empty() {
+		idMappings = m
 	}
 
 	lowerDirs, err := d.getLowerDiffPaths(id)
@@ -2498,6 +2536,50 @@ func (d *Driver) Diff(id string, idMappings *idtools.IDMappings, parent string, 
 		return nil, err
 	}
 	return trc, nil
+}
+
+// easytidy: persist (or clear) the upperdir id translation for the layer
+// mounted by get().  When shifting is active — native idmapped mounts, or the
+// mount program with contiguous maps (the same tuples passed to it as
+// uidmapping=/gidmapping=) — a file created at container uid C is stored with
+// the mapped storage id.  On unshifted mounts (mount program refuses
+// non-contiguous maps, or no maps at all) the raw ids ARE the container view,
+// so any previously recorded translation is stale and gets removed.
+func (d *Driver) storeLayerIDMapping(dir string, disableShifting bool, options graphdriver.MountOpts) {
+	path := filepath.Join(dir, layerIDMapFile)
+	if disableShifting || len(options.UidMaps) == 0 || len(options.GidMaps) == 0 {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			logrus.Warnf("overlay: removing stale %s: %v", path, err)
+		}
+		return
+	}
+	data, err := marshalLayerIDMap(layerIDMap{UIDMaps: options.UidMaps, GIDMaps: options.GidMaps})
+	if err != nil {
+		logrus.Warnf("overlay: encoding %s: %v", layerIDMapFile, err)
+		return
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		logrus.Warnf("overlay: writing %s: %v", path, err)
+	}
+}
+
+// easytidy: load the persisted upperdir id translation for a layer; nil means
+// "unknown / no translation" — callers fall back to passthrough (identity).
+func (d *Driver) loadLayerIDMapping(id string) *idtools.IDMappings {
+	dir, _, _ := d.dir2(id, false)
+	data, err := os.ReadFile(filepath.Join(dir, layerIDMapFile))
+	if err != nil {
+		return nil
+	}
+	m, err := unmarshalLayerIDMap(data)
+	if err != nil {
+		logrus.Warnf("overlay: parsing %s for %s: %v", layerIDMapFile, id, err)
+		return nil
+	}
+	if len(m.UIDMaps) == 0 || len(m.GIDMaps) == 0 {
+		return nil
+	}
+	return idtools.NewIDMappingsFromMaps(m.UIDMaps, m.GIDMaps)
 }
 
 // Changes produces a list of changes between the specified layer
@@ -2535,6 +2617,10 @@ func (d *Driver) UpdateLayerIDMap(id string, toContainer, toHost *idtools.IDMapp
 	var err error
 	dir := d.dir(id)
 	diffDir := filepath.Join(dir, "diff")
+
+	// easytidy: the rewrite re-encodes the whole diff directory; any recorded
+	// translation no longer matches, so drop it.
+	_ = os.Remove(filepath.Join(dir, layerIDMapFile))
 
 	rootIDs := idtools.IDPair{UID: 0, GID: 0}
 	if toHost != nil {
