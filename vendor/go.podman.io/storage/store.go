@@ -1833,8 +1833,17 @@ func (s *store) CreateImage(id string, names []string, layer, metadata string, i
 // - s.imageStore must be locked for writing; it might be identical to ristore.
 // - rlstore must be locked for writing
 // - lstores must all be locked for reading
-func (s *store) imageTopLayerForMapping(image *Image, ristore roImageStore, rlstore rwLayerStore, lstores []roLayerStore, options types.IDMappingOptions) (*Layer, error) {
+func (s *store) imageTopLayerForMapping(image *Image, ristore roImageStore, rlstore rwLayerStore, lstores []roLayerStore, options types.IDMappingOptions, easyTidySkip bool) (*Layer, error) {
+	// easytidy: the caller (easytidy same-mapping fast rebuild) guarantees the
+	// image top layer's on-disk ownership already matches the container's
+	// mapping, and this store runs unshifted (no idmapped overlay), so the
+	// top layer is used as-is even when the recorded UIDMap does not compare
+	// equal to the requested one — skipping the whole-tree mapped-layer copy.
+	easyTidyTrustOnDiskOwnership := easyTidySkip
 	layerMatchesMappingOptions := func(layer *Layer, options types.IDMappingOptions) bool {
+		if easyTidyTrustOnDiskOwnership {
+			return true
+		}
 		// If the driver supports shifting and the layer has no mappings, we can use it.
 		if s.canUseShifting(options.UIDMap, options.GIDMap) && len(layer.UIDMap) == 0 && len(layer.GIDMap) == 0 {
 			return true
@@ -2027,7 +2036,7 @@ func (s *store) CreateContainer(id string, names []string, image, layer, metadat
 	idMappingsOptions := options.IDMappingOptions
 	if image != "" {
 		if cimage.TopLayer != "" {
-			ilayer, err := s.imageTopLayerForMapping(cimage, imageHomeStore, rlstore, lstores, idMappingsOptions)
+			ilayer, err := s.imageTopLayerForMapping(cimage, imageHomeStore, rlstore, lstores, idMappingsOptions, options.EasyTidySkipLayerIDMapUpdate)
 			if err != nil {
 				return nil, err
 			}
@@ -3069,7 +3078,7 @@ func (s *store) MountImage(id string, mountOpts []string, mountLabel string) (st
 		HostUIDMapping: true,
 		HostGIDMapping: true,
 	}
-	ilayer, err := s.imageTopLayerForMapping(cimage, imageHomeStore, rlstore, lstores, idmappingsOpts)
+	ilayer, err := s.imageTopLayerForMapping(cimage, imageHomeStore, rlstore, lstores, idmappingsOpts, false)
 	if err != nil {
 		return "", err
 	}

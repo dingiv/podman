@@ -1,5 +1,5 @@
 Package: easytidy-podman
-Version: 6.2.0-dev+easytidy5
+Version: 6.2.0-dev+easytidy6
 Architecture: amd64
 Maintainer: EasyTidy <dingiv456@163.com>
 Installed-Size: 60002
