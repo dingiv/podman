@@ -1,9 +1,9 @@
 Package: easytidy-podman
-Version: 6.2.0-dev+easytidy3
+Version: 6.2.0-dev+easytidy5
 Architecture: amd64
 Maintainer: EasyTidy <dingiv456@163.com>
-Installed-Size: 59997
-Depends: libseccomp2 (>= 2.5), conmon, catatonit, crun, uidmap, passt, netavark, aardvark-dns, fuse-overlayfs, golang-github-containers-common
+Installed-Size: 60002
+Depends: libseccomp2 (>= 2.5), conmon, catatonit, crun, uidmap, passt, netavark, aardvark-dns, golang-github-containers-common
 Conflicts: podman
 Breaks: podman
 Replaces: podman

@@ -19,7 +19,6 @@ Depends: libseccomp2 (>= 2.5),
          passt,
          netavark,
          aardvark-dns,
-         fuse-overlayfs,
          golang-github-containers-common
 Provides: podman
 Conflicts: podman
