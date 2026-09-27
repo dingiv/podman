@@ -2500,8 +2500,16 @@ func (d *Driver) Diff(id string, idMappings *idtools.IDMappings, parent string, 
 	if idMappings == nil {
 		idMappings = &idtools.IDMappings{}
 	}
-	// easytidy: translate the raw upperdir ids to the container view using the
-	// mapping recorded at mount time; absent (unshifted upperdir) → passthrough.
+	// easytidy (2026-09-27 修正): the fast path tars the RAW upperdir, and the
+	// raw ids are exactly what the easytidy fast create trusts (same-mapping
+	// passthrough). The caller/layer-record mappings (uidmap recorded at
+	// commit) describe the storage encoding ITSELF — applying them here would
+	// rewrite ids into container view, and the trusted raw create would then
+	// interpret them as storage ids again → every rebuild double-shifts
+	// ownership (the /home 999 drift). So IGNORE the caller mappings; only a
+	// driver-level shift record (layerIDMapFile, idmapped-overlay systems)
+	// legitimately translates.
+	idMappings = &idtools.IDMappings{}
 	if m := d.loadLayerIDMapping(id); m != nil && !m.Empty() {
 		idMappings = m
 	}
