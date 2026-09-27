@@ -1687,9 +1687,12 @@ func (r *layerStore) create(id string, parentLayer *Layer, names []string, mount
 		}
 	}
 
+	skipIDMap := moreOptions.EasyTidySkipIDMapUpdate
+	diffMaps := oldMappings != nil &&
+		(!reflect.DeepEqual(oldMappings.UIDs(), idMappings.UIDs()) || !reflect.DeepEqual(oldMappings.GIDs(), idMappings.GIDs()))
 	if oldMappings != nil &&
-		!moreOptions.EasyTidySkipIDMapUpdate &&
-		(!reflect.DeepEqual(oldMappings.UIDs(), idMappings.UIDs()) || !reflect.DeepEqual(oldMappings.GIDs(), idMappings.GIDs())) {
+		!skipIDMap &&
+		diffMaps {
 		if err = r.driver.UpdateLayerIDMap(id, oldMappings, idMappings, mountLabel); err != nil {
 			cleanupFailureContext = "in UpdateLayerIDMap"
 			return nil, -1, err
@@ -2624,9 +2627,13 @@ func (r *layerStore) stageWithUnlockedStore(sl *maybeStagedLayerExtraction, pare
 	}()
 
 	result, err := applyDiff(layerOptions, sl.diff, f, func(payload io.Reader) (int64, error) {
+		// easytidy (2026-09-27 最终修复): extraction is LITERAL — do NOT map
+		// the blob ids via the inherited layer mapping. The easytidy fast
+		// commit passes the raw storage-encoded upperdir through; re-mapping
+		// it here shifted ownership +1 per rebuild (/home 999 drift).
 		cleanup, stagedLayer, size, err := sl.staging.StartStagingDiffToApply(parent, drivers.ApplyDiffOpts{
 			Diff:     payload,
-			Mappings: idtools.NewIDMappingsFromMaps(layerOptions.IDMappingOptions.UIDMap, layerOptions.IDMappingOptions.GIDMap),
+			Mappings: &idtools.IDMappings{},
 			// MountLabel is not supported for the unlocked extraction, see the comment in (*store).PutLayer()
 			MountLabel: "",
 		})
@@ -2816,10 +2823,17 @@ func (r *layerStore) applyDiffWithOptions(to string, layerOptions *LayerOptions,
 		}
 	}()
 
+	// easytidy (2026-09-27 最终修复): extraction is LITERAL — blob ids are
+	// already storage-encoded (the easytidy fast commit passes the raw
+	// upperdir through, and pulled images are stored as-extracted).
+	// Upstream maps the blob ids via the layer's recorded mapping
+	// (inherited from the parent) — correct for vanilla container-view
+	// blobs, but for our raw blobs that is a SECOND translation which
+	// shifts ownership by one mapping step per rebuild (/home 999 drift).
 	result, err := applyDiff(layerOptions, diff, tarSplitFile, func(payload io.Reader) (int64, error) {
 		options := drivers.ApplyDiffOpts{
 			Diff:       payload,
-			Mappings:   r.layerMappings(layer),
+			Mappings:   &idtools.IDMappings{},
 			MountLabel: layer.MountLabel,
 		}
 		return r.driver.ApplyDiff(layer.ID, options)

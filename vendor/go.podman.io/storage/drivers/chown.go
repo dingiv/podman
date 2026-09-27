@@ -10,6 +10,7 @@ import (
 	"github.com/opencontainers/selinux/pkg/pwalkdir"
 	"go.podman.io/storage/pkg/idtools"
 	"go.podman.io/storage/pkg/reexec"
+	"syscall"
 )
 
 const (
@@ -55,10 +56,22 @@ func chownByMapsMain() {
 
 	chowner := newLChowner()
 
+	// easytidy 探针（临时）：记录每个文件的 chown 前后 uid 到固定文件
+	trace, _ := os.OpenFile("/tmp/et-chown-trace.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if trace != nil {
+		defer trace.Close()
+		fmt.Fprintf(trace, "=== chownByMaps toContainer=%v toHost=%v ===\n", discreteMaps[0], discreteMaps[2])
+	}
+
 	var chown fs.WalkDirFunc = func(path string, d fs.DirEntry, _ error) error {
 		info, err := d.Info()
 		if path == "." || err != nil {
 			return nil
+		}
+		if trace != nil && (info.Mode().IsRegular() || info.IsDir()) {
+			if st, ok := info.Sys().(*syscall.Stat_t); ok {
+				fmt.Fprintf(trace, "%s before-uid=%d\n", path, st.Uid)
+			}
 		}
 		return chowner.LChown(path, info, toHost, toContainer)
 	}
