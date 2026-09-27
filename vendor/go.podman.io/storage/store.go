@@ -233,6 +233,9 @@ type Store interface {
 	// additional bookkeeping information which the library stores for the
 	// convenience of its caller.
 	CreateImage(id string, names []string, layer, metadata string, options *ImageOptions) (*Image, error)
+	// SetLayerIDMappings (easytidy fork) records the ID mapping in effect
+	// for an existing layer. See (*store).SetLayerIDMappings.
+	SetLayerIDMappings(layerID string, uidmap, gidmap []idtools.IDMap) error
 
 	// CreateContainer creates a new container, optionally with the
 	// specified ID (one will be assigned if none is specified), with
@@ -1833,6 +1836,62 @@ func (s *store) CreateImage(id string, names []string, layer, metadata string, i
 // - s.imageStore must be locked for writing; it might be identical to ristore.
 // - rlstore must be locked for writing
 // - lstores must all be locked for reading
+// easyTidySameIDMappings (easytidy fork) compares two ID mappings
+// semantically: entries that map a container id onto the identical host id
+// (identity padding, e.g. "1001->1001" after a keep-id swap) are dropped
+// before comparison, so mappings that differ only in such padding compare
+// equal even when their sizes differ.
+func easyTidySameIDMappings(a, b []idtools.IDMap) bool {
+	norm := func(m []idtools.IDMap) []idtools.IDMap {
+		out := make([]idtools.IDMap, 0, len(m))
+		for _, e := range m {
+			if e.ContainerID == e.HostID {
+				continue
+			}
+			out = append(out, e)
+		}
+		return out
+	}
+	na, nb := norm(a), norm(b)
+	if len(na) != len(nb) {
+		return false
+	}
+	for i := range na {
+		if na[i] != nb[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// SetLayerIDMappings (easytidy fork) records the ID mapping in effect for an
+// existing layer. See layerStore.SetIDMappings.
+func (s *store) SetLayerIDMappings(layerID string, uidmap, gidmap []idtools.IDMap) error {
+	rlstore, rlstores, err := s.bothLayerStoreKinds()
+	if err != nil {
+		return err
+	}
+	allStores := append([]roLayerStore{rlstore}, rlstores...)
+	for _, store := range allStores {
+		rw, ok := store.(*layerStore)
+		if !ok {
+			continue
+		}
+		if err := rw.startWriting(); err != nil {
+			continue
+		}
+		err := rw.SetIDMappings(layerID, uidmap, gidmap)
+		rw.stopWriting()
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, ErrLayerUnknown) {
+			return err
+		}
+	}
+	return ErrLayerUnknown
+}
+
 func (s *store) imageTopLayerForMapping(image *Image, ristore roImageStore, rlstore rwLayerStore, lstores []roLayerStore, options types.IDMappingOptions, easyTidySkip bool) (*Layer, error) {
 	// easytidy: the caller (easytidy same-mapping fast rebuild) guarantees the
 	// image top layer's on-disk ownership already matches the container's
@@ -1842,7 +1901,18 @@ func (s *store) imageTopLayerForMapping(image *Image, ristore roImageStore, rlst
 	easyTidyTrustOnDiskOwnership := easyTidySkip
 	layerMatchesMappingOptions := func(layer *Layer, options types.IDMappingOptions) bool {
 		if easyTidyTrustOnDiskOwnership {
-			return true
+			// easytidy: trust on-disk ownership only when the layer records
+			// the same mapping as requested. A recorded DIFFERENT mapping
+			// means the layer was written under another ID mapping (e.g. a
+			// different container user or a remapped generation): trusting it
+			// surfaces foreign-encoded owners in the new container (the
+			// 2026-09 /home permission drift). Legacy layers without a record
+			// keep the old blanket-trust behavior.
+			if len(layer.UIDMap) == 0 && len(layer.GIDMap) == 0 {
+				return true
+			}
+			return easyTidySameIDMappings(layer.UIDMap, options.UIDMap) &&
+				easyTidySameIDMappings(layer.GIDMap, options.GIDMap)
 		}
 		// If the driver supports shifting and the layer has no mappings, we can use it.
 		if s.canUseShifting(options.UIDMap, options.GIDMap) && len(layer.UIDMap) == 0 && len(layer.GIDMap) == 0 {

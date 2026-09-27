@@ -1,4 +1,4 @@
-easytidy-podman (6.2.0-dev+easytidy6) unstable; urgency=medium
+easytidy-podman (6.2.0-dev+easytidy7) unstable; urgency=medium
 
   * Minimal easytidy fork of podman 6.2: fast same-mapping rebuild
     (incremental commit diff, easytidy_fast commit/create parameters),

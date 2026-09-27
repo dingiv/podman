@@ -2216,6 +2216,24 @@ func (r *layerStore) deferredDelete(id string) ([]tempdir.CleanupTempDirFunc, er
 	return cleanFunctions, r.saveFor(layer, false)
 }
 
+// SetIDMappings (easytidy fork) overwrites a layer's recorded UIDMap/GIDMap.
+//
+// The easytidy fast commit stores raw ids from the committing container's
+// user namespace; recording the mapping that produced them lets a later
+// create detect a mapping change (recorded != requested) and fall back to a
+// full translation instead of trusting on-disk ownership.
+//
+// Requires startWriting.
+func (r *layerStore) SetIDMappings(id string, uidmap, gidmap []idtools.IDMap) error {
+	layer, ok := r.lookup(id)
+	if !ok {
+		return ErrLayerUnknown
+	}
+	layer.UIDMap = copySlicePreferringNil(uidmap)
+	layer.GIDMap = copySlicePreferringNil(gidmap)
+	return r.saveFor(layer, false)
+}
+
 // Requires startReading or startWriting.
 func (r *layerStore) Exists(id string) bool {
 	_, ok := r.lookup(id)
