@@ -956,6 +956,7 @@ func (s *storageImageDestination) commitLayer(index int, info addedLayerInfo, si
 	}
 
 	var parentLayer string // "" if no parent
+	etProbe("clayer", "commitLayer index=%d digest=%s", index, info.digest.String()[:24])
 	if index != 0 {
 		// s.indexToStorageID can only be written by this function, and our caller
 		// is responsible for ensuring it can be only be called by *one* goroutine at any
@@ -1048,6 +1049,7 @@ func (s *storageImageDestination) commitLayer(index int, info addedLayerInfo, si
 		return false, nil
 	}
 
+	etProbe("clayer", "createNewLayer index=%d parentLayer=%q newID=%s", index, parentLayer, id)
 	layer, err := s.createNewLayer(index, trusted, parentLayer, id)
 	if err != nil {
 		return false, err

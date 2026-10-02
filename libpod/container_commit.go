@@ -18,6 +18,7 @@ import (
 	"go.podman.io/podman/v6/libpod/define"
 	"go.podman.io/podman/v6/libpod/events"
 	"go.podman.io/podman/v6/libpod/shutdown"
+	"go.podman.io/storage/pkg/idtools"
 )
 
 // ContainerCommitOptions is a struct used to commit a container to an image
@@ -32,6 +33,9 @@ type ContainerCommitOptions struct {
 	Message        string
 	Changes        []string // gets merged with CommitOptions.OverrideChanges
 	Squash         bool     // always used instead of CommitOptions.Squash
+	// EasyTidyFast selects the fork's incremental raw commit.  Default
+	// (false) = upstream vanilla full-snapshot commit.
+	EasyTidyFast bool
 }
 
 // Commit commits the changes between a container and its image, creating a new
@@ -80,6 +84,7 @@ func (c *Container) Commit(ctx context.Context, destImage string, options Contai
 		SignaturePolicyPath:   options.SignaturePolicyPath,
 		ReportWriter:          options.ReportWriter,
 		Squash:                options.Squash,
+		EasyTidyFast:          options.EasyTidyFast,
 		SystemContext:         &c.runtime.imageContext,
 		PreferredManifestType: options.PreferredManifestType,
 		OverrideChanges:       append(append([]string{}, options.Changes...), options.CommitOptions.OverrideChanges...),
@@ -180,6 +185,28 @@ func (c *Container) Commit(ctx context.Context, destImage string, options Contai
 	img, _, err := c.runtime.libimageRuntime.LookupImage(id, nil)
 	if err != nil {
 		return nil, err
+	}
+	// easytidy: record the committing container's ID mapping on the image's
+	// top layer. The fast-commit diff stores raw ids from the container's
+	// user namespace, so the layer record must carry the mapping that
+	// produced them; a later create whose requested mapping differs then
+	// falls back to a full translation instead of trusting on-disk ownership
+	// (see store.imageTopLayerForMapping). Recording is best-effort: failure
+	// only degrades to the legacy blanket-trust behavior.
+	if img != nil && c.config.Spec != nil && c.config.Spec.Linux != nil {
+		if top := img.TopLayer(); top != "" {
+			uidmap := make([]idtools.IDMap, 0, len(c.config.Spec.Linux.UIDMappings))
+			for _, m := range c.config.Spec.Linux.UIDMappings {
+				uidmap = append(uidmap, idtools.IDMap{ContainerID: int(m.ContainerID), HostID: int(m.HostID), Size: int(m.Size)})
+			}
+			gidmap := make([]idtools.IDMap, 0, len(c.config.Spec.Linux.GIDMappings))
+			for _, m := range c.config.Spec.Linux.GIDMappings {
+				gidmap = append(gidmap, idtools.IDMap{ContainerID: int(m.ContainerID), HostID: int(m.HostID), Size: int(m.Size)})
+			}
+			if err := c.runtime.store.SetLayerIDMappings(top, uidmap, gidmap); err != nil {
+				logrus.Debugf("easytidy: recording layer ID mapping for image %s failed: %v", id, err)
+			}
+		}
 	}
 	return img, nil
 }

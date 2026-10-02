@@ -503,6 +503,10 @@ func CommitContainer(w http.ResponseWriter, r *http.Request) {
 		Repo      string   `schema:"repo"`
 		Stream    bool     `schema:"stream"`
 		Tag       string   `schema:"tag"`
+		// EasyTidyFast selects the easytidy fast commit: incremental raw
+		// diff streaming, no pause/unpause, no squash.  Default (absent) =
+		// upstream vanilla full-snapshot commit.
+		EasyTidyFast bool `schema:"easytidy_fast"`
 	}{
 		Format: "oci",
 		Pause:  true,
@@ -548,6 +552,13 @@ func CommitContainer(w http.ResponseWriter, r *http.Request) {
 	options.Pause = query.Pause
 	options.Squash = query.Squash
 	options.Changes = util.DecodeChanges(query.Changes)
+	options.EasyTidyFast = query.EasyTidyFast
+	if query.EasyTidyFast {
+		// Freeze/unpause and whole-rootfs squash are pure overhead for the
+		// easytidy rebuild loop; skip them unconditionally.
+		options.Pause = false
+		options.Squash = false
+	}
 	ctr, err := runtime.LookupContainer(query.Container)
 	if err != nil {
 		utils.Error(w, http.StatusNotFound, err)

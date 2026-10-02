@@ -233,6 +233,9 @@ type Store interface {
 	// additional bookkeeping information which the library stores for the
 	// convenience of its caller.
 	CreateImage(id string, names []string, layer, metadata string, options *ImageOptions) (*Image, error)
+	// SetLayerIDMappings (easytidy fork) records the ID mapping in effect
+	// for an existing layer. See (*store).SetLayerIDMappings.
+	SetLayerIDMappings(layerID string, uidmap, gidmap []idtools.IDMap) error
 
 	// CreateContainer creates a new container, optionally with the
 	// specified ID (one will be assigned if none is specified), with
@@ -688,6 +691,14 @@ type LayerOptions struct {
 	// and reliably known by the caller.
 	// Use the default "" if this fields is not applicable or the value is not known.
 	UncompressedDigest digest.Digest
+	// EasyTidySkipIDMapUpdate is true when the caller guarantees that the
+	// layer's on-disk file ownership already matches the requested ID
+	// mapping (e.g. the layer was produced by a commit with the identical
+	// mapping), so the driver must NOT run the whole-tree UpdateLayerIDMap
+	// chown pass at creation time.  Skipping it is only safe when the
+	// guarantee actually holds; otherwise files will show wrong owners
+	// inside the container.
+	EasyTidySkipIDMapUpdate bool
 	// True is the layer info can be treated as volatile
 	Volatile bool
 	// BigData is a set of items which should be stored with the layer.
@@ -757,6 +768,12 @@ type ContainerOptions struct {
 	StorageOpt map[string]string
 	// Metadata is caller-specified metadata associated with the container.
 	Metadata string
+	// EasyTidySkipLayerIDMapUpdate skips the whole-tree UpdateLayerIDMap
+	// chown pass when creating the container's layer.  Only safe when the
+	// caller guarantees the image top layer's on-disk ownership already
+	// matches the requested ID mapping (same-mapping fast path).
+	// See LayerOptions.EasyTidySkipIDMapUpdate.
+	EasyTidySkipLayerIDMapUpdate bool
 	// BigData is a set of items which should be stored for the container.
 	BigData []ContainerBigDataOption
 }
@@ -1811,6 +1828,40 @@ func (s *store) CreateImage(id string, names []string, layer, metadata string, i
 	})
 }
 
+// etVanillaMappingMatch (easytidy probe) replays UPSTREAM's
+// layerMatchesMappingOptions logic verbatim and reports which branch decided,
+// so probe logs can state what vanilla would have done at decision points the
+// easytidy fork bypasses.  vanilla keeps rebuild-to-rebuild ownership correct
+// via exactly this compare → mapped-copy → addMappedTopLayers loop.
+// shiftCapable = s.canUseShifting(options.UIDMap, options.GIDMap), computed
+// once by the caller (the loop shadows *store with roLayerStore).
+func etVanillaMappingMatch(shiftCapable bool, layer *Layer, options types.IDMappingOptions) (bool, string) {
+	if shiftCapable && len(layer.UIDMap) == 0 && len(layer.GIDMap) == 0 {
+		return true, "shift-capable driver + layer has no recorded maps"
+	}
+	if options.HostUIDMapping && len(layer.UIDMap) != 0 {
+		return false, "host uid mapping requested but layer records uid maps"
+	}
+	if options.HostGIDMapping && len(layer.GIDMap) != 0 {
+		return false, "host gid mapping requested but layer records gid maps"
+	}
+	if reflect.DeepEqual(layer.UIDMap, options.UIDMap) && reflect.DeepEqual(layer.GIDMap, options.GIDMap) {
+		return true, "recorded maps deep-equal requested maps"
+	}
+	return false, "recorded maps DIFFER from requested maps"
+}
+
+// etVanillaProbeTopLayerSkip logs what vanilla would have decided for the
+// top layer that the easytidy skip path is about to use as-is.
+func etVanillaProbeTopLayerSkip(shiftCapable bool, l *Layer, options types.IDMappingOptions) {
+	match, why := etVanillaMappingMatch(shiftCapable, l, options)
+	if match {
+		etProbe("vanilla-idmap", "fork 短路: 直接用 TopLayer %s recorded(uid=%v gid=%v). vanilla: 完美匹配(%s) → 同样复用该层, 无 mapped copy", l.ID, l.UIDMap, l.GIDMap, why)
+	} else {
+		etProbe("vanilla-idmap", "fork 短路: 直接用 TopLayer %s recorded(uid=%v gid=%v). vanilla: 不匹配(%s) → 会建 TemplateLayer=%s 的 mapped copy(target uid=%v gid=%v) 并 addMappedTopLayer 注册, 下次 create 完美命中", l.ID, l.UIDMap, l.GIDMap, why, l.ID, options.UIDMap, options.GIDMap)
+	}
+}
+
 // imageTopLayerForMapping locates the layer that can take the place of the
 // image's top layer as the shared parent layer for a one or more containers
 // which are using ID mappings.
@@ -1819,8 +1870,102 @@ func (s *store) CreateImage(id string, names []string, layer, metadata string, i
 // - s.imageStore must be locked for writing; it might be identical to ristore.
 // - rlstore must be locked for writing
 // - lstores must all be locked for reading
-func (s *store) imageTopLayerForMapping(image *Image, ristore roImageStore, rlstore rwLayerStore, lstores []roLayerStore, options types.IDMappingOptions) (*Layer, error) {
+// easyTidySameIDMappings (easytidy fork) compares two ID mappings
+// semantically: entries that map a container id onto the identical host id
+// (identity padding, e.g. "1001->1001" after a keep-id swap) are dropped
+// before comparison, so mappings that differ only in such padding compare
+// equal even when their sizes differ.
+func easyTidySameIDMappings(a, b []idtools.IDMap) bool {
+	norm := func(m []idtools.IDMap) []idtools.IDMap {
+		out := make([]idtools.IDMap, 0, len(m))
+		for _, e := range m {
+			if e.ContainerID == e.HostID {
+				continue
+			}
+			out = append(out, e)
+		}
+		return out
+	}
+	na, nb := norm(a), norm(b)
+	if len(na) != len(nb) {
+		return false
+	}
+	for i := range na {
+		if na[i] != nb[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// SetLayerIDMappings (easytidy fork) records the ID mapping in effect for an
+// existing layer. See layerStore.SetIDMappings.
+func (s *store) SetLayerIDMappings(layerID string, uidmap, gidmap []idtools.IDMap) error {
+	rlstore, rlstores, err := s.bothLayerStoreKinds()
+	if err != nil {
+		return err
+	}
+	allStores := append([]roLayerStore{rlstore}, rlstores...)
+	for _, store := range allStores {
+		rw, ok := store.(*layerStore)
+		if !ok {
+			continue
+		}
+		if err := rw.startWriting(); err != nil {
+			continue
+		}
+		err := rw.SetIDMappings(layerID, uidmap, gidmap)
+		rw.stopWriting()
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, ErrLayerUnknown) {
+			return err
+		}
+	}
+	return ErrLayerUnknown
+}
+
+func (s *store) imageTopLayerForMapping(image *Image, ristore roImageStore, rlstore rwLayerStore, lstores []roLayerStore, options types.IDMappingOptions, easyTidySkip bool) (*Layer, error) {
+	// easytidy: the caller (easytidy same-mapping fast rebuild) guarantees the
+	// image top layer's on-disk ownership already matches the container's
+	// mapping, and this store runs unshifted (no idmapped overlay), so the
+	// top layer is used as-is even when the recorded UIDMap does not compare
+	// equal to the requested one — skipping the whole-tree mapped-layer copy.
+	// easytidy (2026-09-27 层选择确定性修复): easytidySkip 时必须且只能返回
+	// image.TopLayer 本体。历史实现会遍历 MappedTopLayers 候选并按映射比对，
+	// 非同源 create（如 passwd 探测容器）会往镜像上注册新的 mapped 副本，
+	// 使候选集随时间漂移；连续快速重建时会选中不同层作 RW parent，把中间
+	// commit 层整层跳过 → 历史修正/用户数据断链丢失（demo 事故）。
+	shiftCapable := s.canUseShifting(options.UIDMap, options.GIDMap)
+	if easyTidySkip {
+		if l, err := rlstore.Get(image.TopLayer); err == nil {
+			etVanillaProbeTopLayerSkip(shiftCapable, l, options)
+			return l, nil
+		}
+		for _, s := range lstores {
+			if l, err := s.Get(image.TopLayer); err == nil {
+				etVanillaProbeTopLayerSkip(shiftCapable, l, options)
+				return l, nil
+			}
+		}
+	}
+	easyTidyTrustOnDiskOwnership := easyTidySkip
 	layerMatchesMappingOptions := func(layer *Layer, options types.IDMappingOptions) bool {
+		if easyTidyTrustOnDiskOwnership {
+			// easytidy: trust on-disk ownership only when the layer records
+			// the same mapping as requested. A recorded DIFFERENT mapping
+			// means the layer was written under another ID mapping (e.g. a
+			// different container user or a remapped generation): trusting it
+			// surfaces foreign-encoded owners in the new container (the
+			// 2026-09 /home permission drift). Legacy layers without a record
+			// keep the old blanket-trust behavior.
+			if len(layer.UIDMap) == 0 && len(layer.GIDMap) == 0 {
+				return true
+			}
+			return easyTidySameIDMappings(layer.UIDMap, options.UIDMap) &&
+				easyTidySameIDMappings(layer.GIDMap, options.GIDMap)
+		}
 		// If the driver supports shifting and the layer has no mappings, we can use it.
 		if s.canUseShifting(options.UIDMap, options.GIDMap) && len(layer.UIDMap) == 0 && len(layer.GIDMap) == 0 {
 			return true
@@ -1860,8 +2005,10 @@ func (s *store) imageTopLayerForMapping(image *Image, ristore roImageStore, rlst
 				// If the layer matches the desired mappings, it's a perfect match,
 				// so we're actually done here.
 				if layerMatchesMappingOptions(cLayer, options) {
+					etProbe("vanilla-idmap", "candidate %s 完美匹配 requested(uid=%v gid=%v) recorded(uid=%v gid=%v) → 复用, 无 copy", cLayer.ID, options.UIDMap, options.GIDMap, cLayer.UIDMap, cLayer.GIDMap)
 					return cLayer, nil
 				}
+				etProbe("vanilla-idmap", "candidate %s 不匹配 requested(uid=%v gid=%v) recorded(uid=%v gid=%v)", cLayer.ID, options.UIDMap, options.GIDMap, cLayer.UIDMap, cLayer.GIDMap)
 				// Record the first one that we found, even if it's not ideal, so that
 				// we have a starting point.
 				if layer == nil {
@@ -1905,6 +2052,7 @@ func (s *store) imageTopLayerForMapping(image *Image, ristore roImageStore, rlst
 		}
 	}
 	layerOptions.TemplateLayer = layer.ID
+	etProbe("vanilla-idmap", "无候选匹配 requested(uid=%v gid=%v): 建 %s 的 mapped copy(TemplateLayer, 内部走 UpdateLayerIDMap 整树翻译) 并将注册到 image %s", options.UIDMap, options.GIDMap, layer.ID, image.ID)
 	mappedLayer, _, err := rlstore.create("", parentLayer, nil, layer.MountLabel, nil, &layerOptions, false, nil)
 	if err != nil {
 		return nil, fmt.Errorf("creating an ID-mapped copy of layer %q: %w", layer.ID, err)
@@ -1916,6 +2064,7 @@ func (s *store) imageTopLayerForMapping(image *Image, ristore roImageStore, rlst
 		}
 		return nil, fmt.Errorf("registering ID-mapped layer with image %q: %w", image.ID, err)
 	}
+	etProbe("vanilla-idmap", "mapped copy %s 已注册到 image %s.MappedTopLayers(后续 create 完美命中, 权限跨重建稳定)", mappedLayer.ID, image.ID)
 	return mappedLayer, nil
 }
 
@@ -1930,6 +2079,7 @@ func (s *store) CreateContainer(id string, names []string, image, layer, metadat
 		options.MountOpts = copySlicePreferringNil(cOptions.MountOpts)
 		options.StorageOpt = copyMapPreferringNil(cOptions.StorageOpt)
 		options.BigData = copyContainerBigDataOptionSlice(cOptions.BigData)
+		options.EasyTidySkipLayerIDMapUpdate = cOptions.EasyTidySkipLayerIDMapUpdate
 	}
 	if options.HostUIDMapping {
 		options.UIDMap = nil
@@ -2012,11 +2162,12 @@ func (s *store) CreateContainer(id string, names []string, image, layer, metadat
 	idMappingsOptions := options.IDMappingOptions
 	if image != "" {
 		if cimage.TopLayer != "" {
-			ilayer, err := s.imageTopLayerForMapping(cimage, imageHomeStore, rlstore, lstores, idMappingsOptions)
+			ilayer, err := s.imageTopLayerForMapping(cimage, imageHomeStore, rlstore, lstores, idMappingsOptions, options.EasyTidySkipLayerIDMapUpdate)
 			if err != nil {
 				return nil, err
 			}
 			imageTopLayer = ilayer
+			logrus.Infof("et-probe: CreateContainer image=%s topLayer=%s skipIDMapUpdate=%v reqUIDMap=%v", cimage.ID, ilayer.ID, options.EasyTidySkipLayerIDMapUpdate, idMappingsOptions.UIDMap)
 
 			if !options.HostUIDMapping && len(options.UIDMap) == 0 {
 				uidMap = ilayer.UIDMap
@@ -2040,7 +2191,8 @@ func (s *store) CreateContainer(id string, names []string, image, layer, metadat
 	layerOptions := &LayerOptions{
 		// Normally layers for containers are volatile only if the container is.
 		// But in transient store mode, all container layers are volatile.
-		Volatile: options.Volatile || s.transientStore,
+		Volatile:                options.Volatile || s.transientStore,
+		EasyTidySkipIDMapUpdate: options.EasyTidySkipLayerIDMapUpdate,
 	}
 	useHostMapping := idMappingsOptions.HostUIDMapping || s.canUseShifting(uidMap, gidMap)
 	layerOptions.IDMappingOptions = LayerIDMappingOptions{
@@ -3053,7 +3205,7 @@ func (s *store) MountImage(id string, mountOpts []string, mountLabel string) (st
 		HostUIDMapping: true,
 		HostGIDMapping: true,
 	}
-	ilayer, err := s.imageTopLayerForMapping(cimage, imageHomeStore, rlstore, lstores, idmappingsOpts)
+	ilayer, err := s.imageTopLayerForMapping(cimage, imageHomeStore, rlstore, lstores, idmappingsOpts, false)
 	if err != nil {
 		return "", err
 	}

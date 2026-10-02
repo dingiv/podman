@@ -33,8 +33,17 @@ type overlayWhiteoutConverter struct {
 func (o overlayWhiteoutConverter) ConvertWrite(hdr *tar.Header, path string, fi os.FileInfo) (*tar.Header, error) {
 	// convert whiteouts to AUFS format
 	if fi.Mode()&os.ModeCharDevice != 0 && hdr.Devmajor == 0 && hdr.Devminor == 0 {
-		// we just rename the file and make it normal
+		// easytidy (easytidy/engine): fuse-overlayfs also stores an
+		// AUFS-compat char-device marker named ".wh..opq"; the overlay-style
+		// regular marker ".wh..wh..opq" sits next to it and is emitted by the
+		// walk itself.  Converting the char marker would duplicate that path
+		// (the apply side rejects duplicates), so suppress it: returning an
+		// empty-name header makes the tar writer skip the entry.
 		dir, filename := filepath.Split(hdr.Name)
+		if strings.HasPrefix(filename, WhiteoutPrefix) {
+			return &tar.Header{Name: ""}, nil
+		}
+		// we just rename the file and make it normal
 		hdr.Name = filepath.Join(dir, WhiteoutPrefix+filename)
 		hdr.Mode = 0
 		hdr.Typeflag = tar.TypeReg
@@ -50,6 +59,14 @@ func (o overlayWhiteoutConverter) ConvertWrite(hdr *tar.Header, path string, fi 
 		if len(opaque) == 1 && opaque[0] == 'y' {
 			if hdr.PAXRecords != nil {
 				delete(hdr.PAXRecords, PaxSchilyXattr+getOverlayOpaqueXattrName())
+			}
+			// easytidy (easytidy/engine): fuse-overlayfs stores the opaque
+			// marker as an on-disk .wh..wh..opq regular file (which the walk
+			// emits itself) IN ADDITION to the xattr.  Emitting the extra
+			// opaque whiteout here would duplicate that path and the apply
+			// side rejects duplicate paths.
+			if _, statErr := os.Lstat(filepath.Join(path, WhiteoutOpaqueDir)); statErr == nil {
+				return nil, nil //nolint: nilnil
 			}
 			// If there are no lower layers, then it can't have been deleted in this layer.
 			if len(o.rolayers) == 0 {

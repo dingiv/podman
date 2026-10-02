@@ -3,7 +3,9 @@ package graphdriver
 import (
 	"io"
 	"os"
+	"path/filepath"
 	"runtime"
+	"syscall"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -68,6 +70,21 @@ func (gdw *NaiveDiffDriver) Diff(id string, idMappings *idtools.IDMappings, pare
 	}()
 
 	if parent == "" {
+		// easytidy et-probe[ndiff]: whole-rootfs tar of the merged view —
+		// record the ownership the tar will actually carry.
+		etProbe("ndiff", "parent=%q id=%s merged=%s", parent, id, layerFs)
+		for _, pf := range []string{"home", "home/ubuntu", "bin", "etc/passwd"} {
+			if st, err := os.Stat(filepath.Join(layerFs, pf)); err == nil {
+				uid, gid := uint32(0), uint32(0)
+				if sys, ok := st.Sys().(*syscall.Stat_t); ok {
+					uid, gid = sys.Uid, sys.Gid
+				}
+				etProbe("ndiff", "  merged %s uid=%d gid=%d", pf, uid, gid)
+			} else {
+				etProbe("ndiff", "  merged %s absent", pf)
+			}
+		}
+		etProbe("ndiff", "TarOptions UIDMaps=%v GIDMaps=%v", idMappings.UIDs(), idMappings.GIDs())
 		archive, err := archive.TarWithOptions(layerFs, &archive.TarOptions{
 			Compression: archive.Uncompressed,
 			UIDMaps:     idMappings.UIDs(),

@@ -33,6 +33,23 @@ type specGeneratorWire struct {
 // the new container ID on success along with any warnings.
 func CreateContainer(w http.ResponseWriter, r *http.Request) {
 	runtime := r.Context().Value(api.RuntimeKey).(*libpod.Runtime)
+	// easytidy extension: ?easytidy_fast=true skips the whole-tree
+	// UpdateLayerIDMap chown pass when creating the RW layer.  Callers
+	// must guarantee the image top layer's on-disk ownership already
+	// matches the container's ID mapping (easytidy same-mapping rebuild).
+	// easytidy_fast is accepted for compatibility but intentionally ignored:
+	// layer creation always takes the vanilla slow path (see the create
+	// comment below the ExecuteCreate call).
+	easyTidyFast := false
+	if v := r.URL.Query().Get("easytidy_fast"); v != "" {
+		var err error
+		easyTidyFast, err = strconv.ParseBool(v)
+		if err != nil {
+			utils.Error(w, http.StatusBadRequest, fmt.Errorf("invalid easytidy_fast parameter: %w", err))
+			return
+		}
+	}
+	_ = easyTidyFast
 	conf, err := runtime.GetConfigNoCopy()
 	if err != nil {
 		utils.InternalServerError(w, err)
@@ -111,6 +128,12 @@ func CreateContainer(w http.ResponseWriter, r *http.Request) {
 		utils.InternalServerError(w, err)
 		return
 	}
+	// easytidy (2026-10-02): fast-layer create removed.  The whole-tree
+	// UpdateLayerIDMap chown it skipped only ever runs when the layer's
+	// recorded mapping differs from the request — which the rebuild chain
+	// never hits (same-mapping) — so skipping it bought nothing while
+	// bypassing the layer-selection compare that guards fossil layers.
+	// The query parameter stays accepted (and ignored) for compatibility.
 	ctr, err := generate.ExecuteCreate(r.Context(), runtime, rtSpec, spec, false, opts...)
 	if err != nil {
 		utils.InternalServerError(w, err)

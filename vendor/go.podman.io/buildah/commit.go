@@ -44,6 +44,11 @@ type CommitOptions struct {
 	// PreferredManifestType is the preferred type of image manifest.  The
 	// image configuration format will be of a compatible type.
 	PreferredManifestType string
+	// EasyTidyFast (easytidy fork) selects the fast incremental commit:
+	// store.Diff(from=parent, layer) raw storage-encoded streaming.  When
+	// false (default) commit behaves exactly like upstream: a full merged
+	// rootfs snapshot via Diff("", layer).
+	EasyTidyFast bool
 	// Compression specifies the type of compression which is applied to
 	// layer blobs.  The default is to not use compression, but
 	// archive.Gzip is recommended.

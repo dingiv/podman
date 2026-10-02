@@ -766,6 +766,7 @@ func (s *APIServer) registerContainersHandlers(r *mux.Router) error {
 	//     500:
 	//       $ref: "#/responses/internalError"
 	r.HandleFunc(VersionedPath("/libpod/containers/create"), s.APIHandler(libpod.CreateContainer)).Methods(http.MethodPost)
+	r.HandleFunc(VersionedPath("/libpod/containers/{name}/easytidy-rebuild"), s.APIHandler(libpod.EasyTidyRebuildContainer)).Methods(http.MethodPost)
 	// swagger:operation GET /libpod/containers/json libpod ContainerListLibpod
 	// ---
 	// tags:

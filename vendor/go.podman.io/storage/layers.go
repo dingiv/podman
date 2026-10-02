@@ -43,6 +43,10 @@ const (
 	// tempDirPath is the subdirectory name used for storing temporary directories during layer deletion
 	tempDirPath    = "tmp"
 	incompleteFlag = "incomplete"
+	// easytidy: reencodedFlag marks a layer whose diff bytes were rewritten
+	// by UpdateLayerIDMap (mapped-copy creation).  Its on-disk encoding is
+	// authoritative — Diff must emit it raw, without ToContainer translation.
+	reencodedFlag = "easytidy-reencoded"
 	// maxLayerStoreCleanupIterations is the number of times we try to clean up inconsistent layer store state
 	// in readers (which, for implementation reasons, gives other writers the opportunity to create more inconsistent state)
 	// until we just give up.
@@ -954,6 +958,13 @@ func (r *layerStore) load(lockedForWriting bool) (bool, error) {
 		}
 	}
 
+	// easytidy (2026-10-02 假 digest 存量自愈): must run BEFORE the digest
+	// indexes below are built, so healed layers are not registered under
+	// their stale shared digests.
+	if r.lockfile.IsReadWrite() {
+		etInvalidateSharedDigests(layers, &modifiedLocations)
+	}
+
 	idlist := make([]string, 0, len(layers))
 	names := make(map[string]*Layer)
 	compressedsums := make(map[digest.Digest][]string)
@@ -973,14 +984,20 @@ func (r *layerStore) load(lockedForWriting bool) (bool, error) {
 			}
 			names[name] = layers[n]
 		}
-		if layer.CompressedDigest != "" {
-			compressedsums[layer.CompressedDigest] = append(compressedsums[layer.CompressedDigest], layer.ID)
-		}
-		if layer.UncompressedDigest != "" {
-			uncompressedsums[layer.UncompressedDigest] = append(uncompressedsums[layer.UncompressedDigest], layer.ID)
-		}
-		if layer.TOCDigest != "" {
-			tocsums[layer.TOCDigest] = append(tocsums[layer.TOCDigest], layer.ID)
+		// easytidy (2026-10-02 存量自愈): reencoded layers' digests are
+		// untrusted (stale copies of their template's digests) — keep them
+		// OUT of the digest indexes so blob reuse (TryReusingBlob) can never
+		// resolve onto them.
+		if !etLayerFlaggedReencoded(layer) {
+			if layer.CompressedDigest != "" {
+				compressedsums[layer.CompressedDigest] = append(compressedsums[layer.CompressedDigest], layer.ID)
+			}
+			if layer.UncompressedDigest != "" {
+				uncompressedsums[layer.UncompressedDigest] = append(uncompressedsums[layer.UncompressedDigest], layer.ID)
+			}
+			if layer.TOCDigest != "" {
+				tocsums[layer.TOCDigest] = append(tocsums[layer.TOCDigest], layer.ID)
+			}
 		}
 		if layer.MountLabel != "" {
 			if err := selinux.ReserveLabelV2(layer.MountLabel); err != nil && !errors.Is(err, selinux.ErrMCSAlreadyExists) {
@@ -1687,15 +1704,46 @@ func (r *layerStore) create(id string, parentLayer *Layer, names []string, mount
 		}
 	}
 
+	skipIDMap := moreOptions.EasyTidySkipIDMapUpdate
+	diffMaps := oldMappings != nil &&
+		(!reflect.DeepEqual(oldMappings.UIDs(), idMappings.UIDs()) || !reflect.DeepEqual(oldMappings.GIDs(), idMappings.GIDs()))
+	// easytidy: set when UpdateLayerIDMap actually re-encoded this layer's
+	// diff bytes (template-copied digests/tar-split then describe stale
+	// content — see the invalidation below).
+	reencoded := false
 	if oldMappings != nil &&
-		(!reflect.DeepEqual(oldMappings.UIDs(), idMappings.UIDs()) || !reflect.DeepEqual(oldMappings.GIDs(), idMappings.GIDs())) {
+		!skipIDMap &&
+		diffMaps {
+		etProbe("ulmapc", "对 %s 执行 UpdateLayerIDMap（old=%v new=%v）+ digest 失效", id, oldMappings.UIDs(), idMappings.UIDs())
 		if err = r.driver.UpdateLayerIDMap(id, oldMappings, idMappings, mountLabel); err != nil {
 			cleanupFailureContext = "in UpdateLayerIDMap"
 			return nil, -1, err
 		}
+		// easytidy (2026-10-01, 2026-10-02 修订): UpdateLayerIDMap rewrote
+		// uid/gid of every entry, so this layer's diff bytes no longer match
+		// the digests it inherited from its template.  The digests are now
+		// KEPT (clearing them breaks images/json getSize()) and instead the
+		// reencodedFlag isolates the layer at the two digest consumers:
+		// buildah's manifest shortcut refuses to trust the recorded diffID,
+		// and the load-time digest indexes skip flagged layers so
+		// TryReusingBlob cannot resolve onto the template blob.  The next
+		// commit re-diffs this layer and records truthful digests.
+		// raw 直通约定：磁盘编码是权威。后续对该层的 Diff（含整根打包）
+		// 不得再做 ToContainer 翻译——见 layerStore.Diff 的 flags 检查。
+		layer.Flags[reencodedFlag] = true
+		reencoded = true
+	} else if skipIDMap && diffMaps {
+		etProbe("ulmapc", "layer %s UpdateLayerIDMap 被 EasyTidySkipIDMapUpdate 跳过 (old=%v new=%v); vanilla 会整树翻译该层", id, oldMappings.UIDs(), idMappings.UIDs())
 	}
 
-	if len(templateTSdata) > 0 {
+	// easytidy (2026-10-01): a re-encoded layer's tar-split is the TEMPLATE's
+	// byte stream (copied verbatim below) — replaying it in Diff(from=parent)
+	// streams the original template blob, which the commit destination then
+	// re-attaches as the parent layer (the same drift as the digest issue
+	// above).  A re-encoded layer has no truthful tar-split until its next
+	// commit re-diffs it; leave the file absent so Diff takes the driver
+	// path and computes the real bytes.
+	if len(templateTSdata) > 0 && !reencoded {
 		if err = os.MkdirAll(filepath.Dir(r.tspath(id)), 0o700); err != nil {
 			cleanupFailureContext = "creating tar-split parent directory for a copy from template"
 			return nil, -1, err
@@ -1706,6 +1754,12 @@ func (r *layerStore) create(id string, parentLayer *Layer, names []string, mount
 		}
 	}
 
+	etProbe("create", "层记录落库 id=%s parent=%q template=%q reencoded=%v diff-digest=%q tsdata已写=%v",
+		layer.ID, layer.Parent, moreOptions.TemplateLayer, reencoded,
+		string(layer.UncompressedDigest), func() bool {
+			_, err := os.Stat(r.tspath(layer.ID))
+			return err == nil
+		}())
 	size = -1
 	if contents != nil {
 		if contents.stagedLayerExtraction != nil {
@@ -2215,6 +2269,24 @@ func (r *layerStore) deferredDelete(id string) ([]tempdir.CleanupTempDirFunc, er
 	return cleanFunctions, r.saveFor(layer, false)
 }
 
+// SetIDMappings (easytidy fork) overwrites a layer's recorded UIDMap/GIDMap.
+//
+// The easytidy fast commit stores raw ids from the committing container's
+// user namespace; recording the mapping that produced them lets a later
+// create detect a mapping change (recorded != requested) and fall back to a
+// full translation instead of trusting on-disk ownership.
+//
+// Requires startWriting.
+func (r *layerStore) SetIDMappings(id string, uidmap, gidmap []idtools.IDMap) error {
+	layer, ok := r.lookup(id)
+	if !ok {
+		return ErrLayerUnknown
+	}
+	layer.UIDMap = copySlicePreferringNil(uidmap)
+	layer.GIDMap = copySlicePreferringNil(gidmap)
+	return r.saveFor(layer, false)
+}
+
 // Requires startReading or startWriting.
 func (r *layerStore) Exists(id string) bool {
 	_, ok := r.lookup(id)
@@ -2402,13 +2474,30 @@ func (r *layerStore) Diff(from, to string, options *DiffOptions) (io.ReadCloser,
 		return preader, nil
 	}
 
-	if from != toLayer.Parent {
-		diff, err := r.driver.Diff(to, r.layerMappings(toLayer), from, r.layerMappings(fromLayer), toLayer.MountLabel)
+	// easytidy (2026-10-02 定案): raw unified — EVERY Diff emits the storage
+	// encoding (the naive full-snapshot branch included; its upstream
+	// UIDMaps translation assumed a translated merged view that this
+	// unshifted store does not produce).  Pairs with LITERAL apply.
+	toMappings := &idtools.IDMappings{}
+	etProbe("sldiff", "Diff(from=%q, to=%s) raw 约定：blob=存储编码（LITERAL 落地自洽）", from, to[:12])
+	// easytidy (2026-10-02 存量自愈配套): a reencoded layer's tar-split (if
+	// any) is its TEMPLATE's byte stream — replaying it streams the template
+	// bytes, whose digest equals the template's, which lets the commit
+	// destination TryReusingBlob resolve the manifest parent back onto the
+	// TEMPLATE layer and silently drop this layer from the chain (the
+	// fossil-exposure drift).  Legacy layers created before the tar-split
+	// skip may still carry one — route them to the driver path, which tars
+	// the REAL on-disk (re-encoded) bytes.
+	if from != toLayer.Parent || etLayerFlaggedReencoded(toLayer) {
+		etProbe("sldiff", "Diff(from=%q, to=%s) from≠parent(%v) 或 reencoded(%v) → driver 真实计算（to.parent=%q）",
+			from, to[:12], from != toLayer.Parent, etLayerFlaggedReencoded(toLayer), toLayer.Parent)
+		diff, err := r.driver.Diff(to, toMappings, from, r.layerMappings(fromLayer), toLayer.MountLabel)
 		if err != nil {
 			return nil, err
 		}
 		return maybeCompressReadCloser(diff)
 	}
+	etProbe("sldiff", "Diff(from=%q, to=%s) from==parent → tar-split 重放（创建时固化的模板字节流）", from, to)
 
 	if ad, ok := r.driver.(drivers.AdditionalLayerStoreDriver); ok {
 		if aLayer, err := ad.LookupAdditionalLayerByID(to); err == nil {
@@ -2461,7 +2550,7 @@ func (r *layerStore) Diff(from, to string, options *DiffOptions) (io.ReadCloser,
 		if !os.IsNotExist(err) {
 			return nil, err
 		}
-		diff, err := r.driver.Diff(to, r.layerMappings(toLayer), from, r.layerMappings(fromLayer), toLayer.MountLabel)
+		diff, err := r.driver.Diff(to, toMappings, from, r.layerMappings(fromLayer), toLayer.MountLabel)
 		if err != nil {
 			return nil, err
 		}
@@ -2523,6 +2612,88 @@ func (r *layerStore) DiffSize(from, to string) (size int64, err error) {
 		return -1, ErrLayerUnknown
 	}
 	return r.driver.DiffSize(to, r.layerMappings(toLayer), from, r.layerMappings(fromLayer), toLayer.MountLabel)
+}
+
+// etInvalidateSharedDigests (easytidy 2026-10-02 存量自愈) detects layers
+// whose digests are STALE COPIES of another layer's digests — the signature
+// of a mapped copy created before the digest-invalidation fix
+// (UpdateLayerIDMap re-encoded the diff bytes but the digests were copied
+// verbatim from the template).  A shared digest makes commit paths resolve
+// the manifest parent back to the TEMPLATE blob (buildah NewImageSource
+// shortcut → blobinfo cache → destination TryReusingBlob), silently dropping
+// the re-encoded layer from the image chain; the next same-mapping create
+// then exposes the template's on-disk ownership (the /home 999 drift).
+//
+// Detection: two layers sharing a (compressed or uncompressed) digest while
+// recording DIFFERENT ID mappings — the newer one must be a stale-copy
+// holder.  Both are flagged reencoded; the DIGEST FIELDS THEMSELVES ARE
+// KEPT (clearing them breaks images/json getSize() and the layer size
+// accounting).  Isolation happens at the two digest consumers instead:
+//   - the load-time digest indexes below skip reencoded layers, so
+//     destination TryReusingBlob cannot resolve a manifest parent back to
+//     the template blob;
+//   - buildah's manifest shortcut re-checks the flag before trusting a
+//     recorded diffID, forcing a truthful re-export.
+//
+// A re-diff of a flagged-but-truthful layer is harmless (same bytes, same
+// digest).
+//
+// Must run at load time before the digest indexes are built (callers pass
+// modifiedLocations so the healed records are persisted by the next save).
+func etInvalidateSharedDigests(layers []*Layer, modified *layerLocations) {
+	type entry struct {
+		dgst digest.Digest
+		l    *Layer
+	}
+	var all []entry
+	for _, l := range layers {
+		if l.CompressedDigest != "" {
+			all = append(all, entry{l.CompressedDigest, l})
+		}
+		if l.UncompressedDigest != "" && l.UncompressedDigest != l.CompressedDigest {
+			all = append(all, entry{l.UncompressedDigest, l})
+		}
+	}
+	healed := 0
+	for i := range all {
+		for j := i + 1; j < len(all); j++ {
+			a, b := all[i], all[j]
+			if a.dgst != b.dgst || a.l.ID == b.l.ID {
+				continue
+			}
+			if reflect.DeepEqual(a.l.UIDMap, b.l.UIDMap) && reflect.DeepEqual(a.l.GIDMap, b.l.GIDMap) {
+				continue
+			}
+			for _, pair := range [][2]*Layer{{a.l, b.l}, {b.l, a.l}} {
+				l, other := pair[0], pair[1]
+				if fl, ok := l.Flags[reencodedFlag].(bool); ok && fl {
+					continue // already healed in a previous pass
+				}
+				etProbe("heal", "层 %s 与 %s 共享 digest %s 但映射记录不同 → 标记 reencoded（存量自愈）",
+					l.ID[:12], other.ID[:12], a.dgst.String()[:20])
+				if l.Flags == nil {
+					l.Flags = map[string]interface{}{}
+				}
+				l.Flags[reencodedFlag] = true
+				*modified |= l.location
+				healed++
+			}
+		}
+	}
+	if healed > 0 {
+		logrus.Infof("et-probe[heal]: 存量自愈：标记 %d 个层的假 digest 隔离（同 digest 不同映射记录）", healed)
+	}
+}
+
+// etLayerFlaggedReencoded reports whether the layer carries the easytidy
+// reencoded marker (on-disk encoding authoritative; digests untrusted for
+// reuse decisions).
+func etLayerFlaggedReencoded(layer *Layer) bool {
+	if layer == nil {
+		return false
+	}
+	fl, ok := layer.Flags[reencodedFlag].(bool)
+	return ok && fl
 }
 
 func updateDigestMap(m *map[digest.Digest][]string, oldvalue, newvalue digest.Digest, id string) {
@@ -2605,9 +2776,18 @@ func (r *layerStore) stageWithUnlockedStore(sl *maybeStagedLayerExtraction, pare
 	}()
 
 	result, err := applyDiff(layerOptions, sl.diff, f, func(payload io.Reader) (int64, error) {
+		// easytidy (2026-10-02 定案): extraction is LITERAL, unconditionally.
+		// This fork runs an UNSHIFTED store and mounts the merged view with
+		// no id translation, so every local diff (fast incremental AND the
+		// naive full snapshot) streams the storage encoding.  Upstream's
+		// translated apply assumed a shifted/translated merged view that
+		// does not exist here — applying container-view blobs through it
+		// slid every ownership one mapping slot per squash rebuild
+		// (probe: 999 → 998 → 997).  Blob producers (buildah) were aligned
+		// to the same convention: raw out, literal in.
 		cleanup, stagedLayer, size, err := sl.staging.StartStagingDiffToApply(parent, drivers.ApplyDiffOpts{
 			Diff:     payload,
-			Mappings: idtools.NewIDMappingsFromMaps(layerOptions.IDMappingOptions.UIDMap, layerOptions.IDMappingOptions.GIDMap),
+			Mappings: &idtools.IDMappings{},
 			// MountLabel is not supported for the unlocked extraction, see the comment in (*store).PutLayer()
 			MountLabel: "",
 		})
@@ -2797,10 +2977,16 @@ func (r *layerStore) applyDiffWithOptions(to string, layerOptions *LayerOptions,
 		}
 	}()
 
+	// easytidy (2026-10-02 定案): LITERAL unconditionally — see the comment
+	// in stageWithUnlockedStore.  Pulled blobs arrive in container-view
+	// encoding and land as-is; the gen0 mapped-copy pass (upstream slow
+	// path) is what re-encodes them to the container's mapping, which is
+	// fine: those layers are never mounted directly (canUseShifting is
+	// false on this store).
 	result, err := applyDiff(layerOptions, diff, tarSplitFile, func(payload io.Reader) (int64, error) {
 		options := drivers.ApplyDiffOpts{
 			Diff:       payload,
-			Mappings:   r.layerMappings(layer),
+			Mappings:   &idtools.IDMappings{},
 			MountLabel: layer.MountLabel,
 		}
 		return r.driver.ApplyDiff(layer.ID, options)

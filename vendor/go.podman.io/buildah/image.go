@@ -113,6 +113,7 @@ type containerImageRef struct {
 	containerID           string
 	mountLabel            string
 	layerID               string
+	easyTidyFast          bool
 	oconfig               []byte
 	dconfig               []byte
 	created               *time.Time
@@ -304,12 +305,16 @@ func (i *containerImageRef) extractRootfs(opts ExtractRootfsOptions) (io.ReadClo
 				return
 			}
 		}
-		if i.idMappingOptions != nil {
-			uidMap, gidMap = convertRuntimeIDMaps(i.idMappingOptions.UIDMap, i.idMappingOptions.GIDMap)
-		}
+		// easytidy (2026-10-02 定案): raw unified — do NOT translate the
+		// mounted rootfs ids.  The merged view on this unshifted store IS
+		// the storage encoding; the LITERAL apply on the way back in expects
+		// exactly that.  Upstream's convertRuntimeIDMaps translation emitted
+		// a container-view blob that landed mis-encoded, sliding every
+		// ownership one mapping slot per squash rebuild.  (Known fork
+		// caveat: blobs saved/pushed off-box carry storage-encoded ids.)
+		_ = uidMap
+		_ = gidMap
 		copierOptions := copier.GetOptions{
-			UIDMap:         uidMap,
-			GIDMap:         gidMap,
 			StripSetuidBit: opts.StripSetuidBit,
 			StripSetgidBit: opts.StripSetgidBit,
 			StripXattrs:    opts.StripXattrs,
@@ -1027,7 +1032,20 @@ func (i *containerImageRef) NewImageSource(ctx context.Context, _ *types.SystemC
 		// We already know the digest of the contents of parent layers,
 		// so if this is a parent layer, and we know its digest, reuse
 		// its blobsum, diff ID, and size.
-		if !i.confidentialWorkload.Convert && !i.squash && parentLayerIDs[layerID] && layerUncompressedDigest != "" {
+		// easytidy (2026-10-02 存量自愈配套): a reencoded layer's recorded
+		// diffID is a stale copy of its TEMPLATE's diffID — trusting it here
+		// re-attaches the template blob as the manifest parent and silently
+		// drops the re-encoded layer from the chain.  Force the truthful
+		// re-export path for flagged layers.
+		layerReencoded := false
+		if layer, lerr := i.store.Layer(layerID); lerr == nil && layer != nil {
+			if fl, ok := layer.Flags["easytidy-reencoded"].(bool); ok {
+				layerReencoded = fl
+			}
+		}
+		etProbe("manifest", "层 %s parent=%v 记录diffID=%q reencoded=%v",
+			layerID[:12], parentLayerIDs[layerID], string(layerUncompressedDigest), layerReencoded)
+		if !layerReencoded && !i.confidentialWorkload.Convert && !i.squash && parentLayerIDs[layerID] && layerUncompressedDigest != "" {
 			layerBlobSum := layerUncompressedDigest
 			layerBlobSize := layerUncompressedSize
 			diffID := layerUncompressedDigest
@@ -1051,6 +1069,7 @@ func (i *containerImageRef) NewImageSource(ctx context.Context, _ *types.SystemC
 		var rc io.ReadCloser
 		var errChan chan error
 		var layerExclusions []copier.ConditionalRemovePath
+		var fromLayer string // easytidy: parent layer to diff against ("" for squash etc.)
 		if i.confidentialWorkload.Convert {
 			// Convert the root filesystem into an encrypted disk image.
 			rc, err = i.extractConfidentialWorkloadFS(i.confidentialWorkload)
@@ -1084,6 +1103,20 @@ func (i *containerImageRef) NewImageSource(ctx context.Context, _ *types.SystemC
 					continue
 				}
 				if layerID == i.layerID {
+					// easytidy (2026-10-02 门控化): ONLY the easytidy fast path
+					// streams the incremental diff (store.Diff(from=parent)).
+					// The vanilla slow path keeps UPSTREAM semantics verbatim:
+					// Diff("", layer) tars the FULL merged rootfs — the complete
+					// view snapshot that masks every stale/fossil layer
+					// underneath, which is exactly why vanilla never suffers the
+					// fossil-exposure drift.  fast=false behaves like upstream.
+					if i.easyTidyFast {
+						if l, lerr := i.store.Layer(layerID); lerr == nil && l != nil {
+							fromLayer = l.Parent
+						}
+					}
+					etProbe("manifest", "commit 层 %s 模式=%s fromLayer=%q", layerID[:12],
+						map[bool]string{true: "fast增量", false: "vanilla全量"}[i.easyTidyFast], fromLayer)
 					// We need to filter out any mount targets that we created.
 					layerExclusions = append(slices.Clone(i.layerExclusions), i.layerMountTargets...)
 					// And we _might_ need to filter out directories that modified
@@ -1096,7 +1129,7 @@ func (i *containerImageRef) NewImageSource(ctx context.Context, _ *types.SystemC
 					layerExclusions = append(layerExclusions, layerPullUps...)
 				}
 				// Extract this layer, one of possibly many.
-				rc, err = i.store.Diff("", layerID, diffOptions)
+				rc, err = i.store.Diff(fromLayer, layerID, diffOptions)
 				if err != nil {
 					return nil, fmt.Errorf("extracting %s: %w", what, err)
 				}
@@ -1762,6 +1795,7 @@ func (b *Builder) makeContainerImageRef(options CommitOptions) (*containerImageR
 		containerID:           container.ID,
 		mountLabel:            b.MountLabel,
 		layerID:               container.LayerID,
+		easyTidyFast:          options.EasyTidyFast,
 		oconfig:               oconfig,
 		dconfig:               dconfig,
 		created:               created,
